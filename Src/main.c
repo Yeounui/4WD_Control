@@ -23,6 +23,16 @@
 /* USER CODE BEGIN Includes */
 #include "motor.h"
 #include "hc06.h"
+#include "mpu6050.h"
+#include "kalman.h"
+#include "paramstore.h"
+
+#include <math.h>
+#include <stdio.h>
+
+#define STAT_GYRO_THRESH  1.0f
+#define STAT_WINDOW       200U
+#define STREAM_PERIOD_MS  50U
 
 /* USER CODE END Includes */
 
@@ -51,6 +61,7 @@ UART_HandleTypeDef huart2;
 DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
+volatile uint8_t g_param_save_request = 0U;
 
 /* USER CODE END PV */
 
@@ -104,8 +115,43 @@ int main(void)
   MX_I2C1_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
+  uint32_t last_tick;
+  uint32_t last_stream_tick;
+  uint32_t stat_count;
+  float stat_sum;
+  float stat_sumsq;
+  float stored_r;
+  float stored_bias;
+
   Motor_Init();
   HC06_Init();
+
+  if (MPU6050_Init() == 0U)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"MPU OK\r\n", 8U, HAL_MAX_DELAY);
+  }
+  else
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"MPU FAIL\r\n", 10U, HAL_MAX_DELAY);
+  }
+
+  Kalman_Init();
+  if (ParamStore_Load(&stored_r, &stored_bias) != 0U)
+  {
+    Kalman_SetR(stored_r);
+    Kalman_SetBias(stored_bias);
+    HAL_UART_Transmit(&huart2, (uint8_t *)"PARAM LOADED\r\n", 14U, HAL_MAX_DELAY);
+  }
+  else
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"PARAM DEFAULT\r\n", 15U, HAL_MAX_DELAY);
+  }
+
+  last_tick = HAL_GetTick();
+  last_stream_tick = last_tick;
+  stat_count = 0U;
+  stat_sum = 0.0f;
+  stat_sumsq = 0.0f;
 
   /* USER CODE END 2 */
 
@@ -116,6 +162,88 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    uint32_t now;
+    float dt;
+    float omega_dps;
+    float accel_angle;
+    float yaw;
+
+    if (g_param_save_request != 0U)
+    {
+      uint8_t save_ok;
+
+      g_param_save_request = 0U;
+      save_ok = ParamStore_Save(Kalman_GetR(), Kalman_GetBias());
+      if (save_ok != 0U)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)"SAVED\r\n", 7U, HAL_MAX_DELAY);
+      }
+      else
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)"SAVE_FAIL\r\n", 11U, HAL_MAX_DELAY);
+      }
+    }
+
+    now = HAL_GetTick();
+    dt = (float)(now - last_tick) / 1000.0f;
+    if (dt <= 0.0f)
+    {
+      continue;
+    }
+    last_tick = now;
+
+    if (MPU6050_Read(&omega_dps, &accel_angle) != 0U)
+    {
+      continue;
+    }
+
+    yaw = Kalman_Update(accel_angle, omega_dps, dt);
+
+    if (fabsf(omega_dps) < STAT_GYRO_THRESH)
+    {
+      stat_count++;
+      stat_sum += accel_angle;
+      stat_sumsq += accel_angle * accel_angle;
+
+      if (stat_count >= STAT_WINDOW)
+      {
+        float variance;
+
+        /* R is Var(accel_angle) in deg^2 when the gyro indicates the robot is at rest. */
+        variance = (stat_sumsq - ((stat_sum * stat_sum) / (float)STAT_WINDOW))
+                   / ((float)STAT_WINDOW - 1.0f);
+        if (variance < 1e-6f)
+        {
+          variance = 1e-6f;
+        }
+        Kalman_SetR(variance);
+
+        stat_count = 0U;
+        stat_sum = 0.0f;
+        stat_sumsq = 0.0f;
+      }
+    }
+    else
+    {
+      stat_count = 0U;
+      stat_sum = 0.0f;
+      stat_sumsq = 0.0f;
+    }
+
+    if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
+    {
+      char buffer[32];
+      int length;
+      int32_t yaw_centi;
+
+      yaw_centi = (int32_t)(yaw * 100.0f);
+      length = snprintf(buffer, sizeof(buffer), "YAW=%ld\r\n", (long)yaw_centi);
+      if (length > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+      }
+      last_stream_tick = now;
+    }
   }
   /* USER CODE END 3 */
 }

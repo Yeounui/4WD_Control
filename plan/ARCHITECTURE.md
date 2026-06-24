@@ -7,9 +7,9 @@ file states each unit's responsibility, I/O, and call connections.
 ## Directory Layout
 
 ```
-Inc/   main.h motor.h mpu6050.h kalman.h pid.h encoder.h
+Inc/   main.h motor.h mpu6050.h kalman.h paramstore.h pid.h encoder.h
        vl53l1x.h hc06.h lcd.h fsm.h scurve.h
-Src/   main.c motor.c mpu6050.c kalman.c pid.c encoder.c
+Src/   main.c motor.c mpu6050.c kalman.c paramstore.c pid.c encoder.c
        vl53l1x.c hc06.c lcd.c fsm.c scurve.c
 Drivers/
 └── VL53L1X/   vl53l1_api.{h,c}   (ST official API, UM2356)
@@ -73,21 +73,36 @@ Generic PID with anti-windup. Three instances: `pid_yaw`, `pid_speed` (×4),
 | `PID_Reset` | Clear integral + prev_error | `pid*` | effect: state zeroed | called by `FSM_SetState` on transitions |
 
 ### kalman — `kalman.{h,c}`
-1-D Kalman filter fusing gyro rate + accel-derived angle into a yaw estimate.
+1-D Kalman filter fusing gyro rate + accel-derived angle into a yaw estimate (2-state Lauszus angle+bias structure).
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
 | `Kalman_Update` | Predict (angle += ω·dt, P += Q) then update (K = P/(P+R)) | `kf*`, `omega_dps`, `accel_angle`, `dt` | estimated angle (deg) | called by control tick; ω/accel from `MPU6050_Read`; output consumed by `pid_yaw` and `FSM_Turn_Update` |
+| `Kalman_SetR` | Set measurement-noise variance (clamped to ≥1e-6f) | `kf*`, R (deg²) | effect: filter R updated | called by `ParamStore_Load` or AT+SAVE handler |
+| `Kalman_GetR` | Query current R | `kf*` | R (deg²) | called by AT+GET handler |
+| `Kalman_GetBias` | Query current gyro bias | `kf*` | bias (dps) | called by AT+GET handler |
+| `Kalman_GetAngle` | Query current yaw estimate | `kf*` | angle (deg) | called by AT+GET handler |
+| `Kalman_SetBias` | Set gyro bias state | `kf*`, bias | effect: internal bias updated | called by `ParamStore_Load` |
 
-`R` measured from 500 stationary samples; `Q` tuned ([[USER]] §empirical).
+**R estimation:** runtime stationarity-based. Gate on gyro at rest (|ω_dps| < 1.0) but accumulate variance of `accel_angle` (deg²), not gyro rate. `Q` tuned ([[USER]] §empirical).
 
 ### mpu6050 — `mpu6050.{h,c}`
 MPU-6050 I2C driver (raw gyro + accel).
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `MPU6050_Init` | Wake device, set gyro/accel ranges | — | effect: device configured | called by `main`; calls HAL I2C |
+| `MPU6050_Init` | Wake device, verify WHO_AM_I == 0x68, set gyro/accel ranges | — | effect: device configured; early return on failed WHO_AM_I | called by `main`; calls HAL I2C |
 | `MPU6050_Read` | Read gyro Z rate + compute accel tilt angle | — | `omega_dps`, `accel_angle` (via out-params) | called by control tick; calls `HAL_I2C_Mem_Read`; feeds `Kalman_Update` |
+
+### paramstore — `paramstore.{h,c}`
+Persistent storage of Kalman R and gyro bias in internal Flash (last page 0x0801FC00, 1 KB on STM32F103RBTx).
+
+Record layout: `{magic: 0x4B414C31, float R, float bias}` (16 bytes, fits in 1 KB page).
+
+| Fn | Responsibility | Input | Output | Connections |
+|---|---|---|---|---|
+| `ParamStore_Load` | Read Flash page; validate magic + finite R/bias (≥1e-6f); restore to Kalman filter | — | effect: filter R/bias set from Flash or defaults on invalid/missing data | called by `main` after `Kalman_Init`; calls `Kalman_SetR`, `Kalman_SetBias` |
+| `ParamStore_Save` | Write current Kalman R/bias + magic to Flash page (erase + program) | — | effect: page written (atomic from main loop, never ISR) | called by main loop when AT+SAVE flag is set (flag set by `HC06_Parse` in RX ISR) |
 
 ### encoder — `encoder.{h,c}`
 DIY Hall-sensor wheel encoder. RPM from pulse period: `RPM = 60 / T_pulse_s`,
@@ -141,13 +156,13 @@ EMERGENCY  → IDLE        : BT AT reset
 ### hc06 — `hc06.{h,c}`
 USART2 Bluetooth AT-command interface. Commands: `AT+FWD`→STRAIGHT,
 `AT+LEFT`/`AT+RIGHT`→TURN 90°, `AT+STOP`→IDLE, `AT+MAN`→MANUAL, `AT+RST`→EMERGENCY
-reset.
+reset, `AT+SAVE` (persist R/bias to Flash), `AT+GET` (return R, BIAS, YAW as scaled integers).
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
 | `HC06_Init` | Start USART2 DMA RX into static line buffer | — | effect: RX armed | called by `main`; calls HAL UART/DMA |
-| `HC06_OnReceive` | Accumulate bytes; on terminator hand off line | rx byte/buf | effect: buffer filled | called by USART2 ISR; calls `HC06_Parse` |
-| `HC06_Parse` | Map an AT command string to a state change | `cmd` (const char*) | effect: state change | called by `HC06_OnReceive`; calls `FSM_SetState` |
+| `HC06_OnReceive` | Accumulate bytes; on terminator hand off line | rx byte/buf | effect: buffer filled; AT+SAVE sets `paramstore_save_request` volatile flag | called by USART2 ISR; calls `HC06_Parse` |
+| `HC06_Parse` | Map an AT command string to a state change or parameter action | `cmd` (const char*) | effect: FSM state change, parameter output over USART2, or save flag | called by `HC06_OnReceive`; calls `FSM_SetState` or transmits scaled-integer R/BIAS/YAW |
 
 ### lcd — `lcd.{h,c}`
 I2C character LCD (PCF8574 backpack) status display.

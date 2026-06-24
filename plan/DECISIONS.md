@@ -143,3 +143,39 @@ Phase 1 intentionally implements direction only.
 PA1/PA7/PA8 for Front/Left/Right VL53L1X XSHUT. These pins are exposed on the
 NUCLEO-F103RB Arduino or ST morpho headers, avoid the motor, UART, I2C, ADC, and
 SWD assignments, and leave PA5 free from conflict with the on-board LED.
+
+## D9 — Phase 3 R-estimation uses "Option 3": RUNTIME stationarity-based R estimation + Flash-backed persistence
+
+R-estimation uses runtime stationarity-based R estimation (not a one-time bake-in
+constant). Measured R and gyro bias are persisted across reboots via an internal
+Flash last page at **0x0801FC00** (1 KB, free on STM32F103RBTx 128 KB part).
+Record layout: `{magic 0x4B414C31, float R, float bias}`. Rationale: keeps
+measured params across reboots without re-flashing; user selected on 2026-06-24.
+
+## D10 — Kalman measurement-noise R is the variance of the ACCEL ANGLE (deg^2), NOT gyro-rate variance
+
+The Kalman measurement-noise R is the variance of the **accel angle** (deg²), not
+the gyro-rate variance. This corrects the earlier plan wording "stationary gyro
+samples -> variance = R": in the Lauszus 2-state filter the measurement is
+`accel_angle`, so R must be its variance. Stationarity **detection** still gates
+on the gyro (`|omega_dps| < 1.0 dps = at rest`), but the accumulated variance is
+of `accel_angle`. User selected the physically-correct accel-angle variance on
+2026-06-24.
+
+## D11 — Two new Bluetooth AT commands on USART2: AT+SAVE and AT+GET
+
+Two new AT commands on USART2:
+- **AT+SAVE** persists current R/bias to Flash.
+- **AT+GET** returns each parameter (R, BIAS, YAW) over USART2 as scaled integers.
+
+Constraint: AT+SAVE only sets a volatile request flag inside the RX ISR; the actual
+Flash erase/program runs in the main loop (Flash writes must never run in the
+RX-complete ISR). Numeric output uses scaled integers because newlib-nano has no
+float printf.
+
+## D12 — Robustness (review fix): runtime variance floor + ParamStore Load guard
+
+Runtime variance is clamped to a **1e-6f floor** before `Kalman_SetR`, and
+`ParamStore_Load` rejects a stored R that is non-finite or `<= 0`, falling back
+to Kalman defaults — prevents a degenerate near-zero/negative variance from
+NaN-ing the filter or persisting across reboots.

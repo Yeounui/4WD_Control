@@ -1,10 +1,13 @@
 #include "hc06.h"
 
 #include "main.h"
+#include "kalman.h"
 
+#include <stdio.h>
 #include <string.h>
 
 extern UART_HandleTypeDef huart2;
+extern volatile uint8_t g_param_save_request;
 
 static uint8_t rx_byte;
 static char rx_line[64];
@@ -32,6 +35,38 @@ static void HC06_Parse(const char *cmd)
       }
       break;
 
+    case 'G':
+      if (strcmp(name, "GET") == 0)
+      {
+        char buffer[32];
+        int length;
+
+        /* R is in micro-units, bias in milli-deg/s, and yaw in centi-deg. */
+        length = snprintf(buffer, sizeof(buffer), "R=%ld\r\n",
+                          (long)(Kalman_GetR() * 1000000.0f));
+        if (length > 0)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+        }
+
+        length = snprintf(buffer, sizeof(buffer), "BIAS=%ld\r\n",
+                          (long)(Kalman_GetBias() * 1000.0f));
+        if (length > 0)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+        }
+
+        length = snprintf(buffer, sizeof(buffer), "YAW=%ld\r\n",
+                          (long)(Kalman_GetAngle() * 100.0f));
+        if (length > 0)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+        }
+
+        return;
+      }
+      break;
+
     case 'L':
       if (strcmp(name, "LEFT") == 0)
       {
@@ -54,6 +89,11 @@ static void HC06_Parse(const char *cmd)
       if (strcmp(name, "STOP") == 0)
       {
         state = "IDLE";
+      }
+      else if (strcmp(name, "SAVE") == 0)
+      {
+        g_param_save_request = 1U;
+        return;
       }
       break;
 

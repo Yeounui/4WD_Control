@@ -58,11 +58,10 @@ proceeds through CubeMX boilerplate → code → verify.
   `HC06_Parse` currently echoes the mapped state name only.
 
 ## Phase 3 — IMU + Kalman Yaw (MPU-6050)
-- **Gate (USER):** MPU-6050 on I2C1 PB6/PB7 ([[USER]] §Phase 3).
+- **Gate (USER):** MPU-6050 on I2C1 PB6/PB7, AD0→GND (slave addr 0x68) ([[USER]] §Phase 3).
 - **CubeMX:** I2C1 (standard/fast mode).
-- **Code:** `mpu6050.{h,c}` (raw gyro+accel), `kalman.{h,c}` (`Kalman_Update`).
-- **Verify:** collect 500 stationary gyro samples over USART2 → variance = `R`;
-  yaw output streams over USART2 ([[REVIEW]], [[USER]] §empirical).
+- **Code:** `mpu6050.{h,c}` (MPU6050_Init with WHO_AM_I check; raw gyro rate + accel-derived tilt angle), `kalman.{h,c}` (2-state angle+bias Lauszus filter; `Kalman_Update`), `paramstore.{h,c}` (Flash Load/Save at 0x0801FC00, magic 0x4B414C31, record={R, bias}). Runtime stationarity-based R estimation: gate on gyro (|ω| < 1 dps at rest) but accumulate variance of accel_angle. AT+SAVE (sets volatile flag in RX ISR; main loop performs Flash write). AT+GET (returns R, BIAS, YAW as scaled integers over USART2).
+- **Verify:** MPU-6050 WHO_AM_I=0x68 confirmed; collect stationary samples, R = Var(accel_angle) computed and persisted; yaw streamed over USART2 as centi-degrees (~20 Hz); at-rest drift < 1 deg/min; AT+GET returns all params; AT+SAVE persists across reboot ([[REVIEW]], [[USER]] §empirical). **Status:** implemented / pending-hardware-verification.
 
 ## Phase 4 — Hall Encoder + Speed PID
 - **Gate (USER):** Hall sensors + wheel magnets; FL→PB0, FR→PB1, LR→PB2,
