@@ -8,8 +8,8 @@ information lives; the details live in the linked documents.
 | Item | State |
 |---|---|
 | Plan documents | `generated` (2026-06-23, not yet reviewed) |
-| Implementation | not started — no `Core/` sources generated yet |
-| Next action | **Phase 0** — create the CubeMX base project for STM32F103RE (see [[PHASES]] §Phase 0) |
+| Implementation | **Phase 1 hardware verified** (2026-06-24) — all four motors run; Hall/shock/XSHUT pins resolved; LL EXTI generation and mixed HAL/LL build verified |
+| Next action | Wire and verify the next phase hardware using the canonical pin map in [[USER]] |
 
 The build proceeds one capability phase at a time. Each phase opens with a
 **hardware-connection gate** (user wires the parts) and a **CubeMX boilerplate
@@ -26,17 +26,7 @@ step** before any driver code is written. See [[PHASES]] for the gate workflow.
 | [[DECISIONS]] | Decision history, source corrections, benchmark references |
 | [[REVIEW]] | Engineering-goal acceptance metrics, per-phase verification, fallbacks |
 
-## Resolved Open Questions
-
-- **MCU identity** — `plan.md` said `F103RE` but `SRAM 20 KB`. User confirmed the
-  chip is **STM32F103RE** (64 KB SRAM / 512 KB Flash); the "20 KB" figure was a
-  typo. See [[DECISIONS]] §D2.
-- **Debug output path** — all debug pins named in `plan.md` collide with assigned
-  functions. Resolved: reuse **USART2** for debug during bench tuning before HC-06
-  is attached. See [[DECISIONS]] §D3.
-
 ## Open Questions (unresolved)
 
-- **Board identity** — there is no standard NUCLEO-F103RE; the physical board
-  (generic RET6 dev board vs. custom) affects the ST-Link connection and any
-  on-board LED/button pins. Confirm before Phase 0 wiring. See [[USER]].
+- How will motor speed be modulated for the later per-wheel PID: shield enable
+  inputs, hardware PWM on direction inputs, or another verified interface?

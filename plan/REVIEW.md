@@ -9,15 +9,15 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 |---|---|---|---|
 | Straight-line lateral deviation (1 m run) | no PID | **< 3 cm** | Phase 5 / 9 |
 | 90° turn angular error | timer method ±8° | gyro integration **< ±2°** | Phase 5 / 9 |
-| Wheel speed tracking error | open-loop servo | **< 5%** with Hall PID | Phase 4 |
+| Wheel speed tracking error | open-loop direction drive | **< 5%** with Hall PID after speed actuator is selected | Phase 4 |
 | Distance measurement error (VL53L1X) | HC-SR04 ±3 mm | **< ±1 mm** at 20 cm | Phase 8 |
 | Kalman vs complementary yaw drift | complementary baseline | **< 1°/min** at rest | Phase 3 / 9 |
 
 ## Per-Phase Verification
 
 - **Phase 0** — project builds; empty firmware flashes and runs.
-- **Phase 1** — 4 servos stop at 1500 µs; pulse-width sweep moves each wheel
-  forward/reverse as specified.
+- **Phase 1** — each motor stops with both inputs LOW, runs forward from its first
+  shield input, and runs reverse from its second; no state drives both inputs HIGH.
 - **Phase 2** — AT-command loopback echoes; phone pairs; each command maps to the
   expected `FSM_SetState`.
 - **Phase 3** — 500 stationary samples collected over USART2; variance recorded as

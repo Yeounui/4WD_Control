@@ -28,6 +28,15 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f1xx_hal.h"
+#include "stm32f1xx_ll_system.h"
+#include "stm32f1xx_ll_gpio.h"
+#include "stm32f1xx_ll_exti.h"
+#include "stm32f1xx_ll_bus.h"
+#include "stm32f1xx_ll_cortex.h"
+#include "stm32f1xx_ll_rcc.h"
+#include "stm32f1xx_ll_utils.h"
+#include "stm32f1xx_ll_pwr.h"
+#include "stm32f1xx_ll_dma.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -57,6 +66,55 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define BUZZER_Pin LL_GPIO_PIN_0
+#define BUZZER_GPIO_Port GPIOC
+#define TRACK_ADC_Pin LL_GPIO_PIN_0
+#define TRACK_ADC_GPIO_Port GPIOA
+#define VL53_XSHUT_FRONT_Pin LL_GPIO_PIN_1
+#define VL53_XSHUT_FRONT_GPIO_Port GPIOA
+#define BT_TX_Pin LL_GPIO_PIN_2
+#define BT_TX_GPIO_Port GPIOA
+#define BT_RX_Pin LL_GPIO_PIN_3
+#define BT_RX_GPIO_Port GPIOA
+#define HALL_RR_Pin LL_GPIO_PIN_4
+#define HALL_RR_GPIO_Port GPIOA
+#define HALL_RR_EXTI_IRQn EXTI4_IRQn
+#define SHOCK_Pin LL_GPIO_PIN_6
+#define SHOCK_GPIO_Port GPIOA
+#define SHOCK_EXTI_IRQn EXTI9_5_IRQn
+#define VL53_XSHUT_LEFT_Pin LL_GPIO_PIN_7
+#define VL53_XSHUT_LEFT_GPIO_Port GPIOA
+#define HALL_FL_Pin LL_GPIO_PIN_0
+#define HALL_FL_GPIO_Port GPIOB
+#define HALL_FL_EXTI_IRQn EXTI0_IRQn
+#define HALL_FR_Pin LL_GPIO_PIN_1
+#define HALL_FR_GPIO_Port GPIOB
+#define HALL_FR_EXTI_IRQn EXTI1_IRQn
+#define HALL_RL_Pin LL_GPIO_PIN_2
+#define HALL_RL_GPIO_Port GPIOB
+#define HALL_RL_EXTI_IRQn EXTI2_IRQn
+#define MOTOR_LR_REV_Pin LL_GPIO_PIN_10
+#define MOTOR_LR_REV_GPIO_Port GPIOB
+#define VL53_XSHUT_RIGHT_Pin LL_GPIO_PIN_8
+#define VL53_XSHUT_RIGHT_GPIO_Port GPIOA
+#define MOTOR_LR_FWD_Pin LL_GPIO_PIN_9
+#define MOTOR_LR_FWD_GPIO_Port GPIOA
+#define MOTOR_LF_REV_Pin LL_GPIO_PIN_10
+#define MOTOR_LF_REV_GPIO_Port GPIOA
+#define TMS_Pin LL_GPIO_PIN_13
+#define TMS_GPIO_Port GPIOA
+#define TCK_Pin LL_GPIO_PIN_14
+#define TCK_GPIO_Port GPIOA
+#define MOTOR_LF_FWD_Pin LL_GPIO_PIN_3
+#define MOTOR_LF_FWD_GPIO_Port GPIOB
+#define MOTOR_RF_FWD_Pin LL_GPIO_PIN_4
+#define MOTOR_RF_FWD_GPIO_Port GPIOB
+#define MOTOR_RF_REV_Pin LL_GPIO_PIN_5
+#define MOTOR_RF_REV_GPIO_Port GPIOB
+#define MOTOR_RR_FWD_Pin LL_GPIO_PIN_8
+#define MOTOR_RR_FWD_GPIO_Port GPIOB
+#define MOTOR_RR_REV_Pin LL_GPIO_PIN_9
+#define MOTOR_RR_REV_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

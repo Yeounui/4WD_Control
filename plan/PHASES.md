@@ -28,21 +28,23 @@ proceeds through CubeMX boilerplate → code → verify.
 
 ## Phase 0 — Base Project & Bring-up
 - **Gate (USER):** power board, connect ST-Link via SWD ([[USER]] §Phase 0).
-  Confirm board identity (open question — no standard NUCLEO-F103RE).
-- **CubeMX:** device **STM32F103RE**; HSE/PLL clock to 72 MHz; SysTick; toolchain
+  Board: standard Nucleo-F103RB (on-board ST-Link/V2-1).
+- **CubeMX:** device **STM32F103RB**; HSE/PLL clock to 72 MHz; SysTick; toolchain
   CMake. Generate base project.
 - **Code:** none beyond generated skeleton.
 - **Verify:** project builds; an empty program flashes and runs (e.g. a heartbeat
   on a free GPIO if available). ST-Link attach via `usbipd-wsl` skill.
 
-## Phase 1 — Servo PWM Drive (4WD)
-- **Gate (USER):** 4 servo signal lines PA8–PA11, **separate servo power + common
-  ground** ([[USER]] §Phase 1).
-- **CubeMX:** TIM1 CH1–4 PWM, 50 Hz / 20 ms period, prescaler+ARR for µs
-  resolution.
-- **Code:** `servo.{h,c}` — `Servo_Init`, `Servo_SetPulse`, `Servo_SetAll`
-  ([[ARCHITECTURE]] §servo).
-- **Verify:** all 4 wheels stop at 1500 µs; forward/reverse track pulse width.
+## Phase 1 — H-Bridge Direction Drive (4WD)
+- **Gate (USER):** connect the shield's two direction inputs per motor using the
+  canonical shield-pin/MCU-pin map in [[USER]] §Phase 1; motor supply and MCU
+  share ground.
+- **CubeMX:** eight push-pull GPIO outputs, initialized LOW. TIM1 PWM is not used.
+- **Code:** `motor.{h,c}` — `Motor_Init`, `Motor_SetDirection`, `Motor_SetAll`,
+  `Motor_StopAll` ([[ARCHITECTURE]] §motor).
+- **Verify:** test one wheel at a time: both inputs LOW stops; the first input
+  drives forward; the second input drives reverse; firmware never drives both
+  inputs HIGH.
 
 ## Phase 2 — Bluetooth Manual Comms (HC-06)
 - **Gate (USER):** HC-06 on USART2 (cross TX/RX), PA2/PA3 ([[USER]] §Phase 2).
@@ -59,24 +61,27 @@ proceeds through CubeMX boilerplate → code → verify.
   yaw output streams over USART2 ([[REVIEW]], [[USER]] §empirical).
 
 ## Phase 4 — Hall Encoder + Speed PID
-- **Gate (USER):** 4 Hall sensors PB0–PB3 + wheel magnets; record magnets/rev
-  ([[USER]] §Phase 4).
-- **CubeMX:** EXTI0–3 — **set to LL driver** (not HAL), [[DECISIONS]] §D4.
+- **Gate (USER):** Hall sensors + wheel magnets; FL→PB0, FR→PB1, LR→PB2,
+  RR→PA4; record magnets/rev ([[USER]] §Phase 4).
+- **CubeMX:** EXTI0, EXTI1, EXTI2, EXTI4 with pull-ups and both-edge triggers;
+  generate `MX_GPIO_Init` and the EXTI IRQ path with LL.
 - **Code:** `encoder.{h,c}` (`Encoder_Update` in LL ISR, `Encoder_GetSpeed`),
   `pid.{h,c}` with `pid_speed` ×4 in the control tick.
 - **Verify:** RPM/speed read per wheel; per-wheel speed tracking error
   ([[REVIEW]]).
 
 ## Phase 5 — Straight Drive + S-Curve + Turn *(software only)*
-- **Gate:** none (reuses servos + IMU + encoders).
+- **Gate:** none (reuses motors + IMU + encoders).
 - **CubeMX:** none.
 - **Code:** `pid_yaw` straight correction in `FSM_Straight_Update`;
   `scurve.{h,c}`; `FSM_Turn_Update` gyro-integrated pivot ([[ARCHITECTURE]]).
 - **Verify:** 1 m straight lateral deviation; 90° turn angular error ([[REVIEW]]).
 
 ## Phase 6 — FSM + LCD + Manual + Emergency
-- **Gate (USER):** I2C LCD on I2C1; shock sensor PB4; buzzer PC0 ([[USER]] §Phase 6).
-- **CubeMX:** GPIO PC0 output; EXTI4 — **LL driver**.
+- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6; buzzer PC0
+  ([[USER]] §Phase 6).
+- **CubeMX:** GPIO PC0 output; PA6 EXTI6 with pull-up and both-edge trigger;
+  keep the generated EXTI IRQ path on LL.
 - **Code:** `fsm.{h,c}` (7-state machine + transitions + dispatch), `lcd.{h,c}`;
   wire MANUAL entry/exit and shock-EXTI → EMERGENCY ([[ARCHITECTURE]] §fsm).
 - **Verify:** state + sensors show on LCD; manual mode toggles via HC-06; shock
@@ -90,10 +95,10 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** car follows a line; centroid PID stable.
 
 ## Phase 8 — ToF Obstacle Avoidance (VL53L1X ×3)
-- **Gate (USER):** 3 VL53L1X on shared I2C1, XSHUT PB8/PB9/PB10, bus pull-ups
-  ([[USER]] §Phase 8).
-- **CubeMX:** GPIO PB8–PB10 output (XSHUT). Add `Drivers/VL53L1X/` ST API to the
-  CMake sources.
+- **Gate (USER):** 3 VL53L1X on shared I2C1; XSHUT Front→PA1, Left→PA7,
+  Right→PA8; bus pull-ups ([[USER]] §Phase 8).
+- **CubeMX:** configure PA1/PA7/PA8 as initially-LOW outputs. Add
+  `Drivers/VL53L1X/` ST API to the CMake sources.
 - **Code:** `vl53l1x.{h,c}` — `TOF_Init_All` (XSHUT address sequence),
   `TOF_ReadDistance_mm`, `TOF_IsObstacle`; `FSM_Avoid_Update` (S-curve decel →
   TURN → STRAIGHT). **Verify ST API static RAM footprint first** ([[OVERVIEW]]).

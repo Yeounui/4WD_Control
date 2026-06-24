@@ -7,11 +7,10 @@ file states each unit's responsibility, I/O, and call connections.
 ## Directory Layout
 
 ```
-Core/
-├── Inc/   main.h servo.h mpu6050.h kalman.h pid.h encoder.h
-│          vl53l1x.h hc06.h lcd.h fsm.h scurve.h
-└── Src/   main.c servo.c mpu6050.c kalman.c pid.c encoder.c
-           vl53l1x.c hc06.c lcd.c fsm.c scurve.c
+Inc/   main.h motor.h mpu6050.h kalman.h pid.h encoder.h
+       vl53l1x.h hc06.h lcd.h fsm.h scurve.h
+Src/   main.c motor.c mpu6050.c kalman.c pid.c encoder.c
+       vl53l1x.c hc06.c lcd.c fsm.c scurve.c
 Drivers/
 └── VL53L1X/   vl53l1_api.{h,c}   (ST official API, UM2356)
 ```
@@ -24,7 +23,7 @@ controller below is reached from it; do not read the per-wheel PID or S-curve
 functions as orphaned.
 
 ### `main()` — boot + super loop
-- Init order: `Servo_Init` → `HC06_Init` → `MPU6050_Init` → `Encoder` setup →
+- Init order: `Motor_Init` → `HC06_Init` → `MPU6050_Init` → `Encoder` setup →
   `FSM_Init` → (`LCD_Init`, `TOF_Init_All` as phases land).
 - Then loops; on each 10 ms SysTick flag it runs **one control tick**.
 
@@ -35,35 +34,34 @@ Runs every 10 ms, in order:
 |---|---|---|
 | Read IMU | `MPU6050_Read` → omega, accel-angle | every tick |
 | Yaw estimate | `Kalman_Update` | every tick |
-| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Servo_SetPulse` | every tick |
+| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → motor speed actuator (TBD) | every tick |
 | Profile | `SCurve_Update` | every tick |
 | State handler | `FSM_Dispatch` (runs current state's handler) | every tick |
 | Ranging | `TOF_ReadDistance_mm` / `TOF_IsObstacle` | every 5 ticks (50 ms) |
 | Display | `LCD_Update` | every 20 ticks (200 ms) |
 
 ### ISR entry points
-- **EXTI Hall (PB0–PB3, LL)** → `Encoder_Update` (per wheel).
-- **EXTI Shock (PB4, LL)** → `FSM_SetState(EMERGENCY)` — overrides all states.
+- **LL EXTI Hall (PB0/PB1/PB2/PA4)** → clear the pending line, then
+  `Encoder_Update` (per wheel).
+- **LL EXTI Shock (PA6)** → clear the pending line, then
+  `FSM_SetState(EMERGENCY)` — overrides all states.
 - **USART2 DMA RX** → `HC06_OnReceive` → `HC06_Parse` on line terminator.
 
 ---
 
 ## Modules
 
-### servo — `servo.{h,c}`
-Owns the TIM1 4-channel PWM and the µs↔CCR mapping for KR120 servos.
-
-**KR120 PWM spec (canonical):**
-```
-Period 20 ms (50 Hz) · Stop 1500 µs
-Forward 1500→2000 µs (wider = faster) · Reverse 1500→1000 µs (narrower = faster)
-```
+### motor — `motor.{h,c}`
+Owns the four H-bridge direction pairs. Phase 1 provides forward, reverse, and
+stop only; the speed-modulation mechanism required by later PID phases remains
+an explicit design decision.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `Servo_Init` | Start TIM1 PWM on CH1–4 at 50 Hz, all at stop | — | TIM1 running; effect: 4 channels at 1500 µs | called by `main`; calls HAL TIM |
-| `Servo_SetPulse` | Set one channel's pulse width | `id` (FL/FR/RL/RR), `pw_us` | effect: CCR updated | called by speed loop, FSM handlers, `Servo_SetAll`; calls HAL `__HAL_TIM_SetCompare` |
-| `Servo_SetAll` | Set all four channels to one width | `pw_us` | effect: 4 CCRs updated | called by FSM turn/stop; calls `Servo_SetPulse` ×4 |
+| `Motor_Init` | Put all direction inputs LOW | — | all motors stopped | called by `main`; calls `Motor_StopAll` |
+| `Motor_SetDirection` | Stop one H-bridge pair, then assert forward or reverse | `id` (LF/RF/LR/RR), direction | one motor forward/reverse/stopped | called by FSM handlers; calls HAL GPIO |
+| `Motor_SetAll` | Apply one direction to all four motors | direction | all motors updated | called by FSM turn/stop helpers; calls `Motor_SetDirection` ×4 |
+| `Motor_StopAll` | Put every pair LOW | — | all motors stopped | called by init/emergency/idle paths |
 
 ### pid — `pid.{h,c}`
 Generic PID with anti-windup. Three instances: `pid_yaw`, `pid_speed` (×4),
@@ -97,16 +95,16 @@ DIY Hall-sensor wheel encoder. RPM from pulse period: `RPM = 60 / T_pulse_s`,
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `Encoder_Update` | On Hall pulse, compute rpm/speed from tick delta | `enc*`, `wheel_radius_m` | effect: `enc.rpm`, `enc.speed_ms` updated | called by EXTI Hall ISR (LL); reads TIM tick |
+| `Encoder_Update` | On Hall pulse, compute rpm/speed from tick delta | `enc*`, `wheel_radius_m` | effect: `enc.rpm`, `enc.speed_ms` updated | called by LL EXTI Hall ISR; reads TIM tick |
 | `Encoder_GetSpeed` | Return latest speed for one wheel | `enc*` | speed (m/s) | called by speed loop; feeds `PID_Update(pid_speed)` |
 
 ### scurve — `scurve.{h,c}`
-S-curve speed profile (ACCEL→CRUISE→DECEL→DONE) over pulse width.
+S-curve speed profile (ACCEL→CRUISE→DECEL→DONE) over a speed setpoint.
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `SCurve_Init` | Set target pw, accel rate, phase=ACCEL | `sc*`, `target_pw`, `accel_rate` | effect: profile armed | called by FSM straight-start / avoid-decel |
-| `SCurve_Update` | Advance one tick toward target, update phase | `sc*` | current_pw (µs) | called by control tick; output feeds servo / speed setpoint |
+| `SCurve_Init` | Set target speed, accel rate, phase=ACCEL | `sc*`, target, `accel_rate` | effect: profile armed | called by FSM straight-start / avoid-decel |
+| `SCurve_Update` | Advance one tick toward target, update phase | `sc*` | current speed setpoint | called by control tick; output feeds the speed controller |
 
 ### fsm — `fsm.{h,c}`
 Central 7-state machine. Holds current state + per-state context.
@@ -125,7 +123,7 @@ TURN       → STRAIGHT    : θ ≥ θ_goal
 AVOID      → TURN        : start avoidance rotation
 AVOID      → STRAIGHT    : avoidance complete
 MANUAL     → IDLE        : HC-06 disconnected
-ANY        → EMERGENCY   : shock EXTI (LL) — overrides all
+ANY        → EMERGENCY   : shock EXTI — overrides all
 EMERGENCY  → IDLE        : BT AT reset
 ```
 
@@ -134,11 +132,11 @@ EMERGENCY  → IDLE        : BT AT reset
 | `FSM_Init` | Set state IDLE | — | effect: state=IDLE | called by `main` |
 | `FSM_SetState` | Transition + reset relevant controllers | target state | effect: state changed | called by `HC06_Parse`, shock ISR, handlers; calls `PID_Reset` |
 | `FSM_Dispatch` | Run current state's handler this tick | tick ctx (yaw, speeds, ToF) | effect: handler ran | called by control tick; calls the per-state handlers below |
-| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side servo trim | calls `PID_Update(pid_yaw)`, `Servo_SetPulse`; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
-| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)`, `Servo_*`; checks `TOF_IsObstacle` |
-| `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, `target_deg` | effect: pivot; on done stop + →STRAIGHT | calls `Servo_SetAll`, `FSM_SetState(STRAIGHT)` |
+| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and the future speed actuator; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
+| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and the future speed actuator; checks `TOF_IsObstacle` |
+| `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, `target_deg` | effect: pivot; on done stop + →STRAIGHT | calls `Motor_SetDirection`/`Motor_StopAll`, `FSM_SetState(STRAIGHT)` |
 | `FSM_Avoid_Update` | S-curve decel then →TURN, then →STRAIGHT | ToF, dt | effect: avoidance chain | calls `SCurve_Update`, `FSM_SetState(TURN/STRAIGHT)` |
-| `FSM_Manual_Update` | Hold manual drive from last BT cmd | — | effect: servos per cmd | calls `Servo_*` |
+| `FSM_Manual_Update` | Hold manual drive from last BT cmd | — | effect: motors per cmd | calls `Motor_*` |
 
 ### hc06 — `hc06.{h,c}`
 USART2 Bluetooth AT-command interface. Commands: `AT+FWD`→STRAIGHT,
