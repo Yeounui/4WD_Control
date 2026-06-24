@@ -50,6 +50,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/mpu6050.c
     Src/kalman.c
     Src/paramstore.c
+    Src/encoder.c
+    Src/pid.c
 )
 
 # Add include paths
