@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor.h"
+#include "hc06.h"
 
 /* USER CODE END Includes */
 
@@ -104,6 +105,7 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   Motor_Init();
+  HC06_Init();
 
   /* USER CODE END 2 */
 

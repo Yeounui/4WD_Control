@@ -48,10 +48,14 @@ proceeds through CubeMX boilerplate → code → verify.
 
 ## Phase 2 — Bluetooth Manual Comms (HC-06)
 - **Gate (USER):** HC-06 on USART2 (cross TX/RX), PA2/PA3 ([[USER]] §Phase 2).
-- **CubeMX:** USART2 + DMA RX (also serves as bench debug UART, [[DECISIONS]] §D3).
+- **CubeMX:** USART2 + DMA RX (DMA1 Channel 6 for USART2_RX on F1 mapping; USART2+DMA were already present in the .ioc so no CubeMX regeneration was required). Also serves as bench debug UART ([[DECISIONS]] §D3).
 - **Code:** `hc06.{h,c}` — DMA RX, `HC06_OnReceive`, `HC06_Parse` AT-command map
   ([[ARCHITECTURE]] §hc06).
 - **Verify:** AT-command loopback; phone pairs and commands change state.
+  Baud: 115200 (user's HC-06 reconfigured off the 9600 default).
+  Verify done via Windows Bluetooth virtual COM port at 115200.
+  Motor actuation intentionally deferred to the Phase 6 FSM seam —
+  `HC06_Parse` currently echoes the mapped state name only.
 
 ## Phase 3 — IMU + Kalman Yaw (MPU-6050)
 - **Gate (USER):** MPU-6050 on I2C1 PB6/PB7 ([[USER]] §Phase 3).

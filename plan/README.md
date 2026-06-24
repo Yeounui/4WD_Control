@@ -9,6 +9,7 @@ information lives; the details live in the linked documents.
 |---|---|
 | Plan documents | `generated` (2026-06-23, not yet reviewed) |
 | Implementation | **Phase 1 hardware verified** (2026-06-24) — all four motors run; Hall/shock/XSHUT pins resolved; LL EXTI generation and mixed HAL/LL build verified |
+| **Phase 2 verified** (2026-06-24) | HC-06 manual comms; Bluetooth link + AT-command mapping confirmed on hardware (echo: FWD→STRAIGHT, LEFT/RIGHT→TURN, STOP→IDLE, MAN→MANUAL, RST→EMERGENCY, unknown→ERROR). Motor actuation deferred to FSM seam (Phase 6). |
 | Next action | Wire and verify the next phase hardware using the canonical pin map in [[USER]] |
 
 The build proceeds one capability phase at a time. Each phase opens with a
