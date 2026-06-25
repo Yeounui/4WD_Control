@@ -151,6 +151,64 @@ int main(void)
   uint8_t mpu_ok;
 
   Motor_Init();
+  /* ===== MOTOR_DIAG (throwaway, remove before commit) ===== */
+  {
+    /* Pin-level readback: drive a command, sample each motor pin's actual level (IDR),
+       print high-count out of 2000 (~ effective duty %). Shows what the MCU truly outputs. */
+    static const struct { GPIO_TypeDef *port; uint16_t pin; const char *label; } diag_pins[8] = {
+      { GPIOB, GPIO_PIN_3,  "PB3-LFf"  },
+      { GPIOA, GPIO_PIN_10, "PA10-LFr" },
+      { GPIOB, GPIO_PIN_4,  "PB4-RFf"  },
+      { GPIOB, GPIO_PIN_5,  "PB5-RFr"  },
+      { GPIOA, GPIO_PIN_9,  "PA9-LRf"  },
+      { GPIOB, GPIO_PIN_10, "PB10-LRr" },
+      { GPIOB, GPIO_PIN_8,  "PB8-RRf"  },
+      { GPIOB, GPIO_PIN_9,  "PB9-RRr"  }
+    };
+    static const struct { const char *name; MotorId id; int16_t duty; } scen[4] = {
+      { "STOP",   MOTOR_RF, 0     },
+      { "RF_FWD", MOTOR_RF, 3400  },
+      { "RF_REV", MOTOR_RF, -3400 },
+      { "LF_FWD", MOTOR_LF, 3400  }
+    };
+    char line[80];
+    int sc;
+    int p;
+    int s;
+    int n;
+    uint32_t high;
+
+    for (;;)
+    {
+      for (sc = 0; sc < 4; sc++)
+      {
+        Motor_StopAll();
+        Motor_SetDuty(scen[sc].id, scen[sc].duty);
+        HAL_Delay(150);
+        for (p = 0; p < 8; p++)
+        {
+          high = 0;
+          for (s = 0; s < 2000; s++)
+          {
+            if (HAL_GPIO_ReadPin(diag_pins[p].port, diag_pins[p].pin) == GPIO_PIN_SET)
+            {
+              high++;
+            }
+          }
+          n = snprintf(line, sizeof(line), "%-6s %-9s = %4lu/2000\r\n",
+                       scen[sc].name, diag_pins[p].label, (unsigned long)high);
+          if (n > 0)
+          {
+            HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);
+          }
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t *)"----\r\n", 6U, HAL_MAX_DELAY);
+        Motor_StopAll();
+        HAL_Delay(800);
+      }
+    }
+  }
+  /* ===== END MOTOR_DIAG ===== */
   Encoder_Init();
   FSM_Init();
   HC06_Init();
