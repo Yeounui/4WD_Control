@@ -58,6 +58,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -93,28 +95,12 @@ void Error_Handler(void);
 #define HALL_RL_Pin LL_GPIO_PIN_2
 #define HALL_RL_GPIO_Port GPIOB
 #define HALL_RL_EXTI_IRQn EXTI2_IRQn
-#define MOTOR_LR_REV_Pin LL_GPIO_PIN_10
-#define MOTOR_LR_REV_GPIO_Port GPIOB
 #define VL53_XSHUT_RIGHT_Pin LL_GPIO_PIN_8
 #define VL53_XSHUT_RIGHT_GPIO_Port GPIOA
-#define MOTOR_LR_FWD_Pin LL_GPIO_PIN_9
-#define MOTOR_LR_FWD_GPIO_Port GPIOA
-#define MOTOR_LF_REV_Pin LL_GPIO_PIN_10
-#define MOTOR_LF_REV_GPIO_Port GPIOA
 #define TMS_Pin LL_GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin LL_GPIO_PIN_14
 #define TCK_GPIO_Port GPIOA
-#define MOTOR_LF_FWD_Pin LL_GPIO_PIN_3
-#define MOTOR_LF_FWD_GPIO_Port GPIOB
-#define MOTOR_RF_FWD_Pin LL_GPIO_PIN_4
-#define MOTOR_RF_FWD_GPIO_Port GPIOB
-#define MOTOR_RF_REV_Pin LL_GPIO_PIN_5
-#define MOTOR_RF_REV_GPIO_Port GPIOB
-#define MOTOR_RR_FWD_Pin LL_GPIO_PIN_8
-#define MOTOR_RR_FWD_GPIO_Port GPIOB
-#define MOTOR_RR_REV_Pin LL_GPIO_PIN_9
-#define MOTOR_RR_REV_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

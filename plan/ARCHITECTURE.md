@@ -34,7 +34,7 @@ Runs every 10 ms, in order:
 |---|---|---|
 | Read IMU | `MPU6050_Read` → omega, accel-angle | every tick |
 | Yaw estimate | `Kalman_Update` | every tick |
-| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → motor speed actuator (TBD) | every tick |
+| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Motor_SetDuty` (actuator) | every tick |
 | Profile | `SCurve_Update` | every tick |
 | State handler | `FSM_Dispatch` (runs current state's handler) | every tick |
 | Ranging | `TOF_ReadDistance_mm` / `TOF_IsObstacle` | every 5 ticks (50 ms) |
@@ -52,16 +52,26 @@ Runs every 10 ms, in order:
 ## Modules
 
 ### motor — `motor.{h,c}`
-Owns the four H-bridge direction pairs. Phase 1 provides forward, reverse, and
-stop only; the speed-modulation mechanism required by later PID phases remains
-an explicit design decision.
+Owns the four H-bridge direction pairs. Speed modulation is implemented via `Motor_SetDuty` (see below); the direction helpers now delegate to it.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `Motor_Init` | Put all direction inputs LOW | — | all motors stopped | called by `main`; calls `Motor_StopAll` |
-| `Motor_SetDirection` | Stop one H-bridge pair, then assert forward or reverse | `id` (LF/RF/LR/RR), direction | one motor forward/reverse/stopped | called by FSM handlers; calls HAL GPIO |
+| `Motor_Init` | Start all 8 PWM channels, set every duty to 0 | — | all motors stopped | called by `main`; calls HAL_TIM_PWM_Start ×8 |
+| `Motor_SetDirection` | Stop one H-bridge pair, then assert forward or reverse | `id` (LF/RF/LR/RR), direction | one motor forward/reverse/stopped | called by FSM handlers; delegates to `Motor_SetDuty` |
 | `Motor_SetAll` | Apply one direction to all four motors | direction | all motors updated | called by FSM turn/stop helpers; calls `Motor_SetDirection` ×4 |
-| `Motor_StopAll` | Put every pair LOW | — | all motors stopped | called by init/emergency/idle paths |
+| `Motor_StopAll` | Coast every motor (duty 0) | — | all motors stopped | called by init/emergency/idle paths; calls `Motor_SetDuty` ×4 |
+
+### motor actuator — `Motor_SetDuty` in `motor.c`
+Signed duty actuator for speed modulation. Each motor is a two-PWM H-bridge driven
+by two TIM channels (FWD channel + REV channel). Mapping: LF fwd=TIM2_CH2/rev=TIM1_CH3,
+RF fwd=TIM3_CH1/rev=TIM3_CH2, LR fwd=TIM1_CH2/rev=TIM2_CH3, RR fwd=TIM4_CH3/rev=TIM4_CH4;
+ARR=3599 all timers (20 kHz). `duty>0` → fwd=`|duty|`, rev=0; `duty<0` → fwd=0, rev=`|duty|`;
+0 → both 0 (coast). `Motor_SetDirection`/`Motor_SetAll`/`Motor_StopAll` now delegate to
+`Motor_SetDuty`.
+
+| Fn | Responsibility | Input | Output / effect | Connections |
+|---|---|---|---|---|
+| `Motor_SetDuty` | Set signed PWM duty for one motor (clamped [-3599, +3599]) | `id`, `duty` (int16_t) | motor speed actuation | called by speed loop; drives two TIM channels per motor |
 
 ### pid — `pid.{h,c}`
 Generic PID with anti-windup. Three instances: `pid_yaw`, `pid_speed` (×4),
@@ -147,8 +157,8 @@ EMERGENCY  → IDLE        : BT AT reset
 | `FSM_Init` | Set state IDLE | — | effect: state=IDLE | called by `main` |
 | `FSM_SetState` | Transition + reset relevant controllers | target state | effect: state changed | called by `HC06_Parse`, shock ISR, handlers; calls `PID_Reset` |
 | `FSM_Dispatch` | Run current state's handler this tick | tick ctx (yaw, speeds, ToF) | effect: handler ran | called by control tick; calls the per-state handlers below |
-| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and the future speed actuator; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
-| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and the future speed actuator; checks `TOF_IsObstacle` |
+| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and `Motor_SetDuty`; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
+| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and `Motor_SetDuty`; checks `TOF_IsObstacle` |
 | `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, `target_deg` | effect: pivot; on done stop + →STRAIGHT | calls `Motor_SetDirection`/`Motor_StopAll`, `FSM_SetState(STRAIGHT)` |
 | `FSM_Avoid_Update` | S-curve decel then →TURN, then →STRAIGHT | ToF, dt | effect: avoidance chain | calls `SCurve_Update`, `FSM_SetState(TURN/STRAIGHT)` |
 | `FSM_Manual_Update` | Hold manual drive from last BT cmd | — | effect: motors per cmd | calls `Motor_*` |

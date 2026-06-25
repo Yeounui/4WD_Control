@@ -1,6 +1,8 @@
 #ifndef MOTOR_H
 #define MOTOR_H
 
+#include <stdint.h>
+
 typedef enum
 {
   MOTOR_LF = 0,
@@ -18,6 +20,7 @@ typedef enum
 } MotorDirection;
 
 void Motor_Init(void);
+void Motor_SetDuty(MotorId id, int16_t duty);
 void Motor_SetDirection(MotorId id, MotorDirection direction);
 void Motor_SetAll(MotorDirection direction);
 void Motor_StopAll(void);
