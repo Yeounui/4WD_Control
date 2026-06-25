@@ -22,17 +22,24 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "motor.h"
+#include "encoder.h"
 #include "hc06.h"
 #include "mpu6050.h"
 #include "kalman.h"
 #include "paramstore.h"
+#include "pid.h"
 
 #include <math.h>
 #include <stdio.h>
 
 #define STAT_GYRO_THRESH  1.0f
 #define STAT_WINDOW       200U
+#define SPEED_PERIOD_MS   10U
 #define STREAM_PERIOD_MS  50U
+/* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
+#define SPEED_KP          5.0f
+#define SPEED_KI          0.0f
+#define SPEED_KD          0.0f
 
 /* USER CODE END Includes */
 
@@ -67,6 +74,8 @@ DMA_HandleTypeDef hdma_usart2_rx;
 
 /* USER CODE BEGIN PV */
 volatile uint8_t g_param_save_request = 0U;
+static PID pid_speed[MOTOR_COUNT];
+static float g_speed_setpoint[MOTOR_COUNT] = {0};
 
 /* USER CODE END PV */
 
@@ -129,6 +138,7 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
   uint32_t last_tick;
+  uint32_t last_speed_tick;
   uint32_t last_stream_tick;
   uint32_t stat_count;
   float stat_sum;
@@ -137,6 +147,7 @@ int main(void)
   float stored_bias;
 
   Motor_Init();
+  Encoder_Init();
   HC06_Init();
 
   if (MPU6050_Init() == 0U)
@@ -160,7 +171,13 @@ int main(void)
     HAL_UART_Transmit(&huart2, (uint8_t *)"PARAM DEFAULT\r\n", 15U, HAL_MAX_DELAY);
   }
 
+  for (MotorId w = MOTOR_LF; w < MOTOR_COUNT; w++)
+  {
+    PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD, -3599.0f, 3599.0f);
+  }
+
   last_tick = HAL_GetTick();
+  last_speed_tick = HAL_GetTick();
   last_stream_tick = last_tick;
   stat_count = 0U;
   stat_sum = 0.0f;
@@ -204,6 +221,23 @@ int main(void)
       continue;
     }
     last_tick = now;
+
+    if ((now - last_speed_tick) >= SPEED_PERIOD_MS)
+    {
+      float speed_dt;
+      MotorId w;
+
+      speed_dt = (float)(now - last_speed_tick) / 1000.0f;
+      Encoder_Sample(speed_dt);
+      for (w = MOTOR_LF; w < MOTOR_COUNT; w++)
+      {
+        float out;
+
+        out = PID_Update(&pid_speed[w], g_speed_setpoint[w], Encoder_GetSpeed(w), speed_dt);
+        Motor_SetDuty(w, (int16_t)out);
+      }
+      last_speed_tick = now;
+    }
 
     if (MPU6050_Read(&omega_dps, &accel_angle) != 0U)
     {
