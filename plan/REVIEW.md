@@ -25,7 +25,7 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%.
 - **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°.
 - **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
-  forces EMERGENCY from any state; reset returns to IDLE; buzzer fires.
+  forces EMERGENCY from any state; reset returns to IDLE.
 - **Phase 7** — line follow stays on track around a test loop.
 - **Phase 8** — 3 sensors enumerate on 0x52/0x54/0x56; distance error < ±1 mm at
   20 cm; obstacle triggers S-curve decel → TURN → STRAIGHT.

@@ -179,3 +179,10 @@ Runtime variance is clamped to a **1e-6f floor** before `Kalman_SetR`, and
 `ParamStore_Load` rejects a stored R that is non-finite or `<= 0`, falling back
 to Kalman defaults — prevents a degenerate near-zero/negative variance from
 NaN-ing the filter or persisting across reboots.
+
+## D13 — Phase 6 excludes the buzzer
+
+**Decided 2026-06-25:** Phase 6 implements the FSM, I2C LCD status display,
+HC-06 manual control, and PA6 shock-sensor emergency stop without a buzzer.
+PC0 is no longer allocated by this project, and emergency verification relies on
+the forced FSM transition, motor stop, LCD state, and Bluetooth reset path.

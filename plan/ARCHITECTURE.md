@@ -154,9 +154,12 @@ EMERGENCY  → IDLE        : BT AT reset
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `FSM_Init` | Set state IDLE | — | effect: state=IDLE | called by `main` |
-| `FSM_SetState` | Transition + reset relevant controllers | target state | effect: state changed | called by `HC06_Parse`, shock ISR, handlers; calls `PID_Reset` |
-| `FSM_Dispatch` | Run current state's handler this tick | tick ctx (yaw, speeds, ToF) | effect: handler ran | called by control tick; calls the per-state handlers below |
+| `FSM_Init` | Initialize IDLE or retain a pre-init emergency latch | — | effect: safe stopped state | called by `main`; calls `Motor_StopAll` |
+| `FSM_SetState` | Apply a non-emergency state transition | target state | success/failure; stopped targets for safe/future states | called by deferred HC-06 processing |
+| `FSM_SetDirection` | Map forward/left/right/stop to automatic or MANUAL motion | motion | effect: state/motion target updated | called by HC-06 command processing |
+| `FSM_RequestEmergencyFromISR` | Latch EMERGENCY and stop motors immediately | — | effect: emergency dominates later dispatch | called by PA6 LL EXTI ISR |
+| `FSM_ResetEmergency` | Clear EMERGENCY only when active-low PA6 is released and no EXTI is pending | — | success/failure; returns to IDLE on success | called by `AT+RST` processing |
+| `FSM_Dispatch` | Refresh signed per-wheel speed targets for the current state | — | effect: setpoints updated; unsupported future states stop | called by control loop before speed PID |
 | `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and `Motor_SetDuty`; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
 | `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and `Motor_SetDuty`; checks `TOF_IsObstacle` |
 | `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, `target_deg` | effect: pivot; on done stop + →STRAIGHT | calls `Motor_SetDirection`/`Motor_StopAll`, `FSM_SetState(STRAIGHT)` |
@@ -171,16 +174,16 @@ reset, `AT+SAVE` (persist R/bias to Flash), `AT+GET` (return R, BIAS, YAW as sca
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
 | `HC06_Init` | Start USART2 DMA RX into static line buffer | — | effect: RX armed | called by `main`; calls HAL UART/DMA |
-| `HC06_OnReceive` | Accumulate bytes; on terminator hand off line | rx byte/buf | effect: buffer filled; AT+SAVE sets `paramstore_save_request` volatile flag | called by USART2 ISR; calls `HC06_Parse` |
-| `HC06_Parse` | Map an AT command string to a state change or parameter action | `cmd` (const char*) | effect: FSM state change, parameter output over USART2, or save flag | called by `HC06_OnReceive`; calls `FSM_SetState` or transmits scaled-integer R/BIAS/YAW |
+| `HC06_OnReceive` | Accumulate DMA bytes and publish one complete static command | rx byte | effect: pending command set; no blocking transmit/state change | called by USART2 DMA callback |
+| `HC06_Process` | Consume and parse a pending command in main context | — | effect: FSM action, parameter output, or save flag | called before `FSM_Dispatch`; performs bounded command handoff |
 
 ### lcd — `lcd.{h,c}`
 I2C character LCD (PCF8574 backpack) status display.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `LCD_Init` | Init LCD in 4-bit/I2C mode | — | effect: LCD ready | called by `main`; calls HAL I2C |
-| `LCD_Update` | Render state + key sensor values | tick ctx (state, yaw, dist) | effect: LCD refreshed | called by control tick (every 20 ticks); calls HAL I2C |
+| `LCD_Init` | Probe configurable PCF8574 address (default 0x27) and init 4-bit mode | — | availability flag; absent LCD returns safely | called by `main`; uses 5 ms I2C timeouts |
+| `LCD_Update` | Render current FSM state and yaw/MPU status | state name, yaw, MPU status | effect: two 16-character lines refreshed | called every 200 ms when LCD is available |
 
 ### vl53l1x — `vl53l1x.{h,c}`
 Wrapper over the ST VL53L1X API for 3 multi-drop sensors (`TOF_FRONT/LEFT/RIGHT`).

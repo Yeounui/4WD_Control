@@ -81,14 +81,14 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** 1 m straight lateral deviation; 90° turn angular error ([[REVIEW]]).
 
 ## Phase 6 — FSM + LCD + Manual + Emergency
-- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6; buzzer PC0
-  ([[USER]] §Phase 6).
-- **CubeMX:** GPIO PC0 output; PA6 EXTI6 with pull-up and both-edge trigger;
-  keep the generated EXTI IRQ path on LL.
+- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6 ([[USER]] §Phase 6).
+- **CubeMX:** PA6 EXTI6 with pull-up and both-edge trigger; keep the generated
+  EXTI IRQ path on LL.
 - **Code:** `fsm.{h,c}` (7-state machine + transitions + dispatch), `lcd.{h,c}`;
   wire MANUAL entry/exit and shock-EXTI → EMERGENCY ([[ARCHITECTURE]] §fsm).
 - **Verify:** state + sensors show on LCD; manual mode toggles via HC-06; shock
-  triggers EMERGENCY and overrides all states; buzzer sounds on emergency.
+  triggers EMERGENCY and overrides all states; reset returns to IDLE.
+  **Status:** implemented / pending-hardware-verification.
 
 ## Phase 7 — Line Tracing
 - **Gate (USER):** tracking module analog out → PA0 ([[USER]] §Phase 7).

@@ -68,8 +68,6 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define BUZZER_Pin LL_GPIO_PIN_0
-#define BUZZER_GPIO_Port GPIOC
 #define TRACK_ADC_Pin LL_GPIO_PIN_0
 #define TRACK_ADC_GPIO_Port GPIOA
 #define VL53_XSHUT_FRONT_Pin LL_GPIO_PIN_1

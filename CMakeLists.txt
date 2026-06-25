@@ -52,6 +52,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/paramstore.c
     Src/encoder.c
     Src/pid.c
+    Src/fsm.c
+    Src/lcd.c
 )
 
 # Add include paths

@@ -29,7 +29,6 @@ other documents link here instead of repeating the table.
 | GPIO | PA1 (Arduino A1) | Output | XSHUT VL53L1X Front | HAL |
 | GPIO | PA7 (Arduino D11) | Output | XSHUT VL53L1X Left | HAL |
 | GPIO | PA8 (Arduino D7) | Output | XSHUT VL53L1X Right | HAL |
-| GPIO | PC0 | Output | Buzzer | HAL |
 
 > **Board identity (resolved 2026-06-24):** standard **Nucleo-F103RB** with on-board
 > ST-Link/V2-1 (its VCP is wired to USART2 PA2/PA3 — shared with HC-06, use one at a
@@ -55,8 +54,8 @@ procedure is in [[PHASES]]; this section is the wiring checklist the user acts o
   RR→PA4. Mount one
   (or more) magnet(s) per wheel; record magnets-per-revolution for the encoder
   constant.
-- **Phase 6 — I2C LCD + shock sensor + buzzer**: LCD (PCF8574 backpack) SCL→PB6,
-  SDA→PB7, VCC 5 V, GND (shares I2C1). Shock sensor signal→PA6. Buzzer→PC0, GND.
+- **Phase 6 — I2C LCD + shock sensor**: LCD (PCF8574 backpack) SCL→PB6,
+  SDA→PB7, VCC 5 V, GND (shares I2C1). Shock sensor signal→PA6.
 - **Phase 7 — tracking module**: analog out→PA0 (ADC1_CH0), VCC, GND.
 - **Phase 8 — 3× VL53L1X**: all SCL→PB6, all SDA→PB7 (shared bus); XSHUT
   Front→PA1, Left→PA7, Right→PA8. VCC, GND each.
@@ -81,7 +80,7 @@ physical hardware gate above.
 
 ## Build & Flash
 
-Toolchain and commands follow the workspace `stm32-development-workflow` skill
+Toolchain and commands follow the workspace `stm32-firmware-workflow` skill
 (CMake + Ninja + arm-none-eabi-gcc, flash via STM32CubeProgrammer). To expose the
 ST-Link inside WSL2, use the `usbipd-wsl` skill to attach the USB device.
 

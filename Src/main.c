@@ -23,7 +23,9 @@
 /* USER CODE BEGIN Includes */
 #include "motor.h"
 #include "encoder.h"
+#include "fsm.h"
 #include "hc06.h"
+#include "lcd.h"
 #include "mpu6050.h"
 #include "kalman.h"
 #include "paramstore.h"
@@ -36,6 +38,7 @@
 #define STAT_WINDOW       200U
 #define SPEED_PERIOD_MS   10U
 #define STREAM_PERIOD_MS  50U
+#define LCD_PERIOD_MS     200U
 /* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
 #define SPEED_KP          5.0f
 #define SPEED_KI          0.0f
@@ -75,8 +78,6 @@ DMA_HandleTypeDef hdma_usart2_rx;
 /* USER CODE BEGIN PV */
 volatile uint8_t g_param_save_request = 0U;
 static PID pid_speed[MOTOR_COUNT];
-static float g_speed_setpoint[MOTOR_COUNT] = {0};
-
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -140,26 +141,33 @@ int main(void)
   uint32_t last_tick;
   uint32_t last_speed_tick;
   uint32_t last_stream_tick;
+  uint32_t last_lcd_tick;
   uint32_t stat_count;
   float stat_sum;
   float stat_sumsq;
   float stored_r;
   float stored_bias;
+  float yaw;
+  uint8_t mpu_ok;
 
   Motor_Init();
   Encoder_Init();
+  FSM_Init();
   HC06_Init();
 
   if (MPU6050_Init() == 0U)
   {
+    mpu_ok = 1U;
     HAL_UART_Transmit(&huart2, (uint8_t *)"MPU OK\r\n", 8U, HAL_MAX_DELAY);
   }
   else
   {
+    mpu_ok = 0U;
     HAL_UART_Transmit(&huart2, (uint8_t *)"MPU FAIL\r\n", 10U, HAL_MAX_DELAY);
   }
 
   Kalman_Init();
+  yaw = 0.0f;
   if (ParamStore_Load(&stored_r, &stored_bias) != 0U)
   {
     Kalman_SetR(stored_r);
@@ -176,12 +184,15 @@ int main(void)
     PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD, -3599.0f, 3599.0f);
   }
 
-  last_tick = HAL_GetTick();
-  last_speed_tick = HAL_GetTick();
-  last_stream_tick = last_tick;
   stat_count = 0U;
   stat_sum = 0.0f;
   stat_sumsq = 0.0f;
+  LCD_Init();
+  LCD_Update(FSM_GetStateName(), yaw, mpu_ok);
+  last_tick = HAL_GetTick();
+  last_speed_tick = last_tick;
+  last_stream_tick = last_tick;
+  last_lcd_tick = last_tick;
 
   /* USER CODE END 2 */
 
@@ -196,7 +207,9 @@ int main(void)
     float dt;
     float omega_dps;
     float accel_angle;
-    float yaw;
+    uint8_t sample_ok;
+
+    HC06_Process();
 
     if (g_param_save_request != 0U)
     {
@@ -215,6 +228,7 @@ int main(void)
     }
 
     now = HAL_GetTick();
+    FSM_Dispatch();
     dt = (float)(now - last_tick) / 1000.0f;
     if (dt <= 0.0f)
     {
@@ -231,40 +245,88 @@ int main(void)
       Encoder_Sample(speed_dt);
       for (w = MOTOR_LF; w < MOTOR_COUNT; w++)
       {
+        float measured;
         float out;
+        float setpoint;
+        uint32_t primask;
+        uint8_t output_valid;
 
-        out = PID_Update(&pid_speed[w], g_speed_setpoint[w], Encoder_GetSpeed(w), speed_dt);
-        Motor_SetDuty(w, (int16_t)out);
+        setpoint = 0.0f;
+        output_valid = 0U;
+        if (FSM_IsMotionEnabled() != 0U)
+        {
+          setpoint = FSM_GetSpeedSetpoint(w);
+          measured = Encoder_GetSpeed(w);
+          if (setpoint < 0.0f)
+          {
+            measured = -measured;
+          }
+          out = PID_Update(&pid_speed[w], setpoint, measured, speed_dt);
+          output_valid = 1U;
+        }
+        else
+        {
+          PID_Reset(&pid_speed[w]);
+          out = 0.0f;
+        }
+
+        primask = __get_PRIMASK();
+        __disable_irq();
+        if (FSM_IsEmergency() != 0U)
+        {
+          PID_Reset(&pid_speed[w]);
+          Motor_StopAll();
+        }
+        else if ((output_valid == 0U) || (FSM_IsMotionEnabled() == 0U)
+                 || (FSM_GetSpeedSetpoint(w) != setpoint))
+        {
+          PID_Reset(&pid_speed[w]);
+          Motor_SetDuty(w, 0);
+        }
+        else
+        {
+          Motor_SetDuty(w, (int16_t)out);
+        }
+        if (primask == 0U)
+        {
+          __enable_irq();
+        }
       }
       last_speed_tick = now;
     }
 
-    if (MPU6050_Read(&omega_dps, &accel_angle) != 0U)
+    sample_ok = (MPU6050_Read(&omega_dps, &accel_angle) == 0U) ? 1U : 0U;
+    if (sample_ok != 0U)
     {
-      continue;
-    }
+      mpu_ok = 1U;
+      yaw = Kalman_Update(accel_angle, omega_dps, dt);
 
-    yaw = Kalman_Update(accel_angle, omega_dps, dt);
-
-    if (fabsf(omega_dps) < STAT_GYRO_THRESH)
-    {
-      stat_count++;
-      stat_sum += accel_angle;
-      stat_sumsq += accel_angle * accel_angle;
-
-      if (stat_count >= STAT_WINDOW)
+      if (fabsf(omega_dps) < STAT_GYRO_THRESH)
       {
-        float variance;
+        stat_count++;
+        stat_sum += accel_angle;
+        stat_sumsq += accel_angle * accel_angle;
 
-        /* R is Var(accel_angle) in deg^2 when the gyro indicates the robot is at rest. */
-        variance = (stat_sumsq - ((stat_sum * stat_sum) / (float)STAT_WINDOW))
-                   / ((float)STAT_WINDOW - 1.0f);
-        if (variance < 1e-6f)
+        if (stat_count >= STAT_WINDOW)
         {
-          variance = 1e-6f;
-        }
-        Kalman_SetR(variance);
+          float variance;
 
+          /* R is Var(accel_angle) in deg^2 when the gyro indicates the robot is at rest. */
+          variance = (stat_sumsq - ((stat_sum * stat_sum) / (float)STAT_WINDOW))
+                     / ((float)STAT_WINDOW - 1.0f);
+          if (variance < 1e-6f)
+          {
+            variance = 1e-6f;
+          }
+          Kalman_SetR(variance);
+
+          stat_count = 0U;
+          stat_sum = 0.0f;
+          stat_sumsq = 0.0f;
+        }
+      }
+      else
+      {
         stat_count = 0U;
         stat_sum = 0.0f;
         stat_sumsq = 0.0f;
@@ -272,6 +334,7 @@ int main(void)
     }
     else
     {
+      mpu_ok = 0U;
       stat_count = 0U;
       stat_sum = 0.0f;
       stat_sumsq = 0.0f;
@@ -290,6 +353,12 @@ int main(void)
         HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
       }
       last_stream_tick = now;
+    }
+
+    if ((now - last_lcd_tick) >= LCD_PERIOD_MS)
+    {
+      LCD_Update(FSM_GetStateName(), yaw, mpu_ok);
+      last_lcd_tick = now;
     }
   }
   /* USER CODE END 3 */
@@ -697,7 +766,7 @@ static void MX_DMA_Init(void)
   HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
   /* DMA1_Channel6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA1_Channel6_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel6_IRQn);
 
 }
@@ -717,22 +786,11 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOD);
-  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOC);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOB);
 
   /**/
-  LL_GPIO_ResetOutputPin(BUZZER_GPIO_Port, BUZZER_Pin);
-
-  /**/
   LL_GPIO_ResetOutputPin(GPIOA, VL53_XSHUT_FRONT_Pin|VL53_XSHUT_LEFT_Pin|VL53_XSHUT_RIGHT_Pin);
-
-  /**/
-  GPIO_InitStruct.Pin = BUZZER_Pin;
-  GPIO_InitStruct.Mode = LL_GPIO_MODE_OUTPUT;
-  GPIO_InitStruct.Speed = LL_GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.OutputType = LL_GPIO_OUTPUT_PUSHPULL;
-  LL_GPIO_Init(BUZZER_GPIO_Port, &GPIO_InitStruct);
 
   /**/
   GPIO_InitStruct.Pin = VL53_XSHUT_FRONT_Pin|VL53_XSHUT_LEFT_Pin|VL53_XSHUT_RIGHT_Pin;
@@ -767,7 +825,7 @@ static void MX_GPIO_Init(void)
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_6;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_FALLING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/

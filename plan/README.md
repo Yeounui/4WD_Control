@@ -9,10 +9,11 @@ information lives; the details live in the linked documents.
 |---|---|
 | Plan documents | `generated` (2026-06-23, not yet reviewed) |
 | Implementation | **Phase 1 hardware verified** (2026-06-24) — all four motors run; Hall/shock/XSHUT pins resolved; LL EXTI generation and mixed HAL/LL build verified |
-| **Phase 2 verified** (2026-06-24) | HC-06 manual comms; Bluetooth link + AT-command mapping confirmed on hardware (echo: FWD→STRAIGHT, LEFT/RIGHT→TURN, STOP→IDLE, MAN→MANUAL, RST→EMERGENCY, unknown→ERROR). Motor actuation deferred to FSM seam (Phase 6). |
-| **Phase 3 implemented** (2026-06-24) | MPU-6050 IMU + 2-state Kalman yaw on I2C1; runtime stationarity-based R = Var(accel_angle) with Flash persistence (0x0801FC00) of R/bias; AT+SAVE/AT+GET added on USART2; yaw streamed as centi-degrees. Code-complete, build clean, review-passed (variance-floor + load-guard fix). PENDING hardware verification — MPU-6050 not yet wired. |
+| **Phase 2 verified** (2026-06-24) | HC-06 Bluetooth link and parser transport verified on hardware. Phase 6 now owns command actuation: FWD/LEFT/RIGHT drive FSM motion, STOP→IDLE, MAN→MANUAL, and RST clears a released emergency back to IDLE. |
+| **Phase 3 verified** (2026-06-25) | MPU-6050 responds at 0x68 with WHO_AM_I=0x68 and produces a stable YAW stream. At-rest drift acceptance MET on hardware: two 60 s USART2 captures measured +0.01 and -0.14 °/min (well under the <1 °/min criterion), noise p2p 0.09–0.67°. |
 | **Phase 4 implemented** (2026-06-25) | Encoder + 4× speed PID wired into the 100 Hz control tick (Encoder_Sample → PID_Update → Motor_SetDuty); motor driver converted to two-PWM H-bridge duty control (Motor_SetDuty, ±3599). Build green. PENDING hardware: speed-tracking error <5% verify + SPEED_KP/KI/KD and ENCODER_COUNTS_PER_REV tuning. |
-| Next action | Phase 4 hardware bring-up — tune speed-PID gains and ENCODER_COUNTS_PER_REV on the bench, confirm per-wheel tracking error <5%. |
+| **Phase 6 implemented** (2026-06-25) | Seven-state FSM, deferred HC-06 command processing, latched PA6 shock emergency, and bounded PCF8574 LCD status output implemented without a buzzer/PC0. Clean build, review fixes, flash verification, and MPU runtime regression passed. PENDING hardware: LCD and shock-sensor behavior. |
+| Next action | Connect the Phase 6 LCD and shock sensor, then verify LCD state/yaw output, emergency motor stop, and AT+RST recovery. Phase 4 speed tuning remains pending. |
 
 The build proceeds one capability phase at a time. Each phase opens with a
 **hardware-connection gate** (user wires the parts) and a **CubeMX boilerplate
