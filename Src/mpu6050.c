@@ -1,6 +1,7 @@
 #include "mpu6050.h"
 
 #include "main.h"
+#include "soft_i2c.h"
 
 #include <math.h>
 
@@ -12,14 +13,11 @@
 #define MPU6050_CONFIG         0x1AU
 #define MPU6050_ACCEL_XOUT_H   0x3BU
 
-extern I2C_HandleTypeDef hi2c1;
-
 uint8_t MPU6050_Init(void)
 {
   uint8_t value;
 
-  if (HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS, MPU6050_WHO_AM_I,
-                       I2C_MEMADD_SIZE_8BIT, &value, 1U, HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemRead(MPU6050_ADDRESS, MPU6050_WHO_AM_I, &value, 1U) != HAL_OK)
   {
     return 1U;
   }
@@ -30,29 +28,25 @@ uint8_t MPU6050_Init(void)
   }
 
   value = 0x00U;
-  if (HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDRESS, MPU6050_PWR_MGMT_1,
-                        I2C_MEMADD_SIZE_8BIT, &value, 1U, HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemWrite(MPU6050_ADDRESS, MPU6050_PWR_MGMT_1, &value, 1U) != HAL_OK)
   {
     return 1U;
   }
 
   value = 0x00U;
-  if (HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDRESS, MPU6050_GYRO_CONFIG,
-                        I2C_MEMADD_SIZE_8BIT, &value, 1U, HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemWrite(MPU6050_ADDRESS, MPU6050_GYRO_CONFIG, &value, 1U) != HAL_OK)
   {
     return 1U;
   }
 
   value = 0x00U;
-  if (HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDRESS, MPU6050_ACCEL_CONFIG,
-                        I2C_MEMADD_SIZE_8BIT, &value, 1U, HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemWrite(MPU6050_ADDRESS, MPU6050_ACCEL_CONFIG, &value, 1U) != HAL_OK)
   {
     return 1U;
   }
 
   value = 0x03U;
-  if (HAL_I2C_Mem_Write(&hi2c1, MPU6050_ADDRESS, MPU6050_CONFIG,
-                        I2C_MEMADD_SIZE_8BIT, &value, 1U, HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemWrite(MPU6050_ADDRESS, MPU6050_CONFIG, &value, 1U) != HAL_OK)
   {
     return 1U;
   }
@@ -67,8 +61,7 @@ uint8_t MPU6050_Read(float *omega_dps, float *accel_angle)
   int16_t accel_z;
   int16_t gyro_z;
 
-  if (HAL_I2C_Mem_Read(&hi2c1, MPU6050_ADDRESS, MPU6050_ACCEL_XOUT_H,
-                       I2C_MEMADD_SIZE_8BIT, data, sizeof(data), HAL_MAX_DELAY) != HAL_OK)
+  if (SoftI2C_MemRead(MPU6050_ADDRESS, MPU6050_ACCEL_XOUT_H, data, sizeof(data)) != HAL_OK)
   {
     return 1U;
   }

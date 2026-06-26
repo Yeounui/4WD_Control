@@ -54,6 +54,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/pid.c
     Src/fsm.c
     Src/lcd.c
+    Src/soft_i2c.c
 )
 
 # Add include paths

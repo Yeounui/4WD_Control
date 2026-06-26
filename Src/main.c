@@ -27,6 +27,7 @@
 #include "hc06.h"
 #include "lcd.h"
 #include "mpu6050.h"
+#include "soft_i2c.h"
 #include "kalman.h"
 #include "paramstore.h"
 #include "pid.h"
@@ -65,8 +66,6 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
-I2C_HandleTypeDef hi2c1;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -85,7 +84,6 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
@@ -131,7 +129,6 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
-  MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
@@ -151,67 +148,10 @@ int main(void)
   uint8_t mpu_ok;
 
   Motor_Init();
-  /* ===== MOTOR_DIAG (throwaway, remove before commit) ===== */
-  {
-    /* Pin-level readback: drive a command, sample each motor pin's actual level (IDR),
-       print high-count out of 2000 (~ effective duty %). Shows what the MCU truly outputs. */
-    static const struct { GPIO_TypeDef *port; uint16_t pin; const char *label; } diag_pins[8] = {
-      { GPIOB, GPIO_PIN_3,  "PB3-LFf"  },
-      { GPIOA, GPIO_PIN_10, "PA10-LFr" },
-      { GPIOB, GPIO_PIN_4,  "PB4-RFf"  },
-      { GPIOB, GPIO_PIN_5,  "PB5-RFr"  },
-      { GPIOA, GPIO_PIN_9,  "PA9-LRf"  },
-      { GPIOB, GPIO_PIN_10, "PB10-LRr" },
-      { GPIOB, GPIO_PIN_8,  "PB8-RRf"  },
-      { GPIOB, GPIO_PIN_9,  "PB9-RRr"  }
-    };
-    static const struct { const char *name; MotorId id; int16_t duty; } scen[4] = {
-      { "STOP",   MOTOR_RF, 0     },
-      { "RF_FWD", MOTOR_RF, 3400  },
-      { "RF_REV", MOTOR_RF, -3400 },
-      { "LF_FWD", MOTOR_LF, 3400  }
-    };
-    char line[80];
-    int sc;
-    int p;
-    int s;
-    int n;
-    uint32_t high;
-
-    for (;;)
-    {
-      for (sc = 0; sc < 4; sc++)
-      {
-        Motor_StopAll();
-        Motor_SetDuty(scen[sc].id, scen[sc].duty);
-        HAL_Delay(150);
-        for (p = 0; p < 8; p++)
-        {
-          high = 0;
-          for (s = 0; s < 2000; s++)
-          {
-            if (HAL_GPIO_ReadPin(diag_pins[p].port, diag_pins[p].pin) == GPIO_PIN_SET)
-            {
-              high++;
-            }
-          }
-          n = snprintf(line, sizeof(line), "%-6s %-9s = %4lu/2000\r\n",
-                       scen[sc].name, diag_pins[p].label, (unsigned long)high);
-          if (n > 0)
-          {
-            HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);
-          }
-        }
-        HAL_UART_Transmit(&huart2, (uint8_t *)"----\r\n", 6U, HAL_MAX_DELAY);
-        Motor_StopAll();
-        HAL_Delay(800);
-      }
-    }
-  }
-  /* ===== END MOTOR_DIAG ===== */
   Encoder_Init();
   FSM_Init();
   HC06_Init();
+  SoftI2C_Init();
 
   if (MPU6050_Init() == 0U)
   {
@@ -435,13 +375,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -516,40 +455,6 @@ static void MX_ADC1_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
-/**
   * @brief TIM1 Initialization Function
   * @param None
   * @retval None
@@ -571,7 +476,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 3599;
+  htim1.Init.Period = 3199;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -639,7 +544,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 3599;
+  htim2.Init.Period = 3199;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -692,7 +597,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 3599;
+  htim3.Init.Period = 3199;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
@@ -745,7 +650,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 0;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 3599;
+  htim4.Init.Period = 3199;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
@@ -843,7 +748,6 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOD);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOB);
 
