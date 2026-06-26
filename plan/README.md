@@ -8,12 +8,8 @@ information lives; the details live in the linked documents.
 | Item | State |
 |---|---|
 | Plan documents | `generated` (2026-06-23, not yet reviewed) |
-| Implementation | **Phase 1 hardware verified** (2026-06-24) — all four motors run; Hall/shock/XSHUT pins resolved; LL EXTI generation and mixed HAL/LL build verified |
-| **Phase 2 verified** (2026-06-24) | HC-06 Bluetooth link and parser transport verified on hardware. Phase 6 now owns command actuation: FWD/LEFT/RIGHT drive FSM motion, STOP→IDLE, MAN→MANUAL, and RST clears a released emergency back to IDLE. |
-| **Phase 3 verified** (2026-06-25) | MPU-6050 responds at 0x68 with WHO_AM_I=0x68 and produces a stable YAW stream. At-rest drift acceptance MET on hardware: two 60 s USART2 captures measured +0.01 and -0.14 °/min (well under the <1 °/min criterion), noise p2p 0.09–0.67°. |
-| **Phase 4 implemented** (2026-06-25) | Encoder + 4× speed PID wired into the 100 Hz control tick (Encoder_Sample → PID_Update → Motor_SetDuty); motor driver converted to two-PWM H-bridge duty control (Motor_SetDuty, ±3599). Build green. PENDING hardware: speed-tracking error <5% verify + SPEED_KP/KI/KD and ENCODER_COUNTS_PER_REV tuning. |
-| **Phase 6 implemented** (2026-06-25) | Seven-state FSM, deferred HC-06 command processing, latched PA6 shock emergency, and bounded PCF8574 LCD status output implemented without a buzzer/PC0. Clean build, review fixes, flash verification, and MPU runtime regression passed. PENDING hardware: LCD and shock-sensor behavior. |
-| Next action | Connect the Phase 6 LCD and shock sensor, then verify LCD state/yaw output, emergency motor stop, and AT+RST recovery. Phase 4 speed tuning remains pending. |
+| Implementation | **Phase 1 PWM motor bring-up verified** (2026-06-26) — all four motors run forward/reverse on TIM1-TIM4 PWM at 20 kHz; project rebuilt for HSI-derived 64 MHz with no HSE |
+| Next action | Resolve the I2C1 remap vs RR motor pin conflict before wiring MPU-6050 / LCD / VL53L1X on the shared I2C bus |
 
 The build proceeds one capability phase at a time. Each phase opens with a
 **hardware-connection gate** (user wires the parts) and a **CubeMX boilerplate
@@ -32,5 +28,7 @@ step** before any driver code is written. See [[PHASES]] for the gate workflow.
 
 ## Open Questions (unresolved)
 
-- _(none open)_ — motor speed modulation resolved in Phase 4: two-PWM H-bridge
-  duty via `Motor_SetDuty` (±3599, 20 kHz); see [[ARCHITECTURE]] motor actuator.
+- I2C1 PB6/PB7 caused interference in the current shield/NUCLEO stack and must
+  not be used. I2C1 remap PB8/PB9 is the only F103 I2C1 alternate pin pair, but
+  those pins are currently RR motor TIM4_CH3/CH4; RR motor pins must be moved or
+  the project must switch to another I2C instance before Phase 3.

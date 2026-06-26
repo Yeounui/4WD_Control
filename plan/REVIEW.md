@@ -9,15 +9,17 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 |---|---|---|---|
 | Straight-line lateral deviation (1 m run) | no PID | **< 3 cm** | Phase 5 / 9 |
 | 90° turn angular error | timer method ±8° | gyro integration **< ±2°** | Phase 5 / 9 |
-| Wheel speed tracking error | open-loop direction drive | **< 5%** with Hall PID after speed actuator is selected | Phase 4 |
+| Wheel speed tracking error | open-loop PWM duty drive | **< 5%** with Hall PID after tuning | Phase 4 |
 | Distance measurement error (VL53L1X) | HC-SR04 ±3 mm | **< ±1 mm** at 20 cm | Phase 8 |
 | Kalman vs complementary yaw drift | complementary baseline | **< 1°/min** at rest | Phase 3 / 9 |
 
 ## Per-Phase Verification
 
 - **Phase 0** — project builds; empty firmware flashes and runs.
-- **Phase 1** — each motor stops with both inputs LOW, runs forward from its first
-  shield input, and runs reverse from its second; no state drives both inputs HIGH.
+- **Phase 1** — verified 2026-06-26 on hardware: each motor stops/coasts at duty
+  0, runs forward from positive signed PWM duty on its first shield input, and
+  runs reverse from negative duty on its second; no command drives both PWM
+  directions non-zero for the same motor.
 - **Phase 2** — AT-command loopback echoes; phone pairs; each command maps to the
   expected `FSM_SetState`.
 - **Phase 3** — 500 stationary samples collected over USART2; variance recorded as
@@ -25,7 +27,7 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%.
 - **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°.
 - **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
-  forces EMERGENCY from any state; reset returns to IDLE.
+  forces EMERGENCY from any state; reset returns to IDLE; buzzer fires.
 - **Phase 7** — line follow stays on track around a test loop.
 - **Phase 8** — 3 sensors enumerate on 0x52/0x54/0x56; distance error < ±1 mm at
   20 cm; obstacle triggers S-curve decel → TURN → STRAIGHT.
@@ -44,6 +46,11 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Debug path lost after HC-06 attach** — collect tuning data on USART2 *before*
   attaching HC-06; thereafter use LCD status. (No spare debug UART — [[DECISIONS]]
   §D3.)
+- **Hardware I2C1 unusable; use software I2C** — enabling I2C1 drags `I2C1_SMBA`
+  onto PB5 and kills RF-reverse PWM ([[DECISIONS]] §D10). All hardware I2C
+  placements collide (I2C1 PB6/7→SMBA on PB5; I2C1 remap PB8/9 = RR motor; I2C2
+  PB10/11 = LR-reverse). The sensor bus is therefore a **software bit-bang I2C on
+  PB6/PB7** (`soft_i2c`); never re-enable the hardware I2C1 peripheral on this stack.
 - **VL53L1X RAM footprint too large** — measure ST API static RAM before Phase 8
   integration; if it threatens the budget, reduce ranging config or sensor count.
 - **Turn drift from gyro integration** — fall back to the timer method baseline

@@ -7,9 +7,9 @@ file states each unit's responsibility, I/O, and call connections.
 ## Directory Layout
 
 ```
-Inc/   main.h motor.h mpu6050.h kalman.h paramstore.h pid.h encoder.h
+Inc/   main.h motor.h mpu6050.h kalman.h pid.h encoder.h
        vl53l1x.h hc06.h lcd.h fsm.h scurve.h
-Src/   main.c motor.c mpu6050.c kalman.c paramstore.c pid.c encoder.c
+Src/   main.c motor.c mpu6050.c kalman.c pid.c encoder.c
        vl53l1x.c hc06.c lcd.c fsm.c scurve.c
 Drivers/
 └── VL53L1X/   vl53l1_api.{h,c}   (ST official API, UM2356)
@@ -34,7 +34,7 @@ Runs every 10 ms, in order:
 |---|---|---|
 | Read IMU | `MPU6050_Read` → omega, accel-angle | every tick |
 | Yaw estimate | `Kalman_Update` | every tick |
-| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Motor_SetDuty` (actuator) | every tick |
+| Speed loop | `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Motor_SetDuty` ×4 | every tick |
 | Profile | `SCurve_Update` | every tick |
 | State handler | `FSM_Dispatch` (runs current state's handler) | every tick |
 | Ranging | `TOF_ReadDistance_mm` / `TOF_IsObstacle` | every 5 ticks (50 ms) |
@@ -52,26 +52,18 @@ Runs every 10 ms, in order:
 ## Modules
 
 ### motor — `motor.{h,c}`
-Owns the four H-bridge direction pairs. Speed modulation is implemented via `Motor_SetDuty` (see below); the direction helpers now delegate to it.
+Owns the four H-bridge PWM direction pairs. Positive signed duty drives the
+forward input, negative signed duty drives the reverse input, and zero duty
+coasts/stops with both compare values at 0. Phase 1 uses open-loop duty; later
+PID phases can feed this signed-duty actuator.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `Motor_Init` | Start all 8 PWM channels, set every duty to 0 | — | all motors stopped | called by `main`; calls HAL_TIM_PWM_Start ×8 |
-| `Motor_SetDirection` | Stop one H-bridge pair, then assert forward or reverse | `id` (LF/RF/LR/RR), direction | one motor forward/reverse/stopped | called by FSM handlers; delegates to `Motor_SetDuty` |
+| `Motor_Init` | Start all PWM channels and set compares to 0 | — | all motors stopped/coasting | called by `main` |
+| `Motor_SetDuty` | Clamp signed duty and write exactly one compare channel non-zero | `id` (LF/RF/LR/RR), signed duty | one motor forward/reverse/coast | called by speed/drive logic; calls HAL TIM compare macros |
+| `Motor_SetDirection` | Convenience full-scale forward/reverse/stop wrapper | `id` (LF/RF/LR/RR), direction | one motor forward/reverse/stopped | called by FSM handlers; calls `Motor_SetDuty` |
 | `Motor_SetAll` | Apply one direction to all four motors | direction | all motors updated | called by FSM turn/stop helpers; calls `Motor_SetDirection` ×4 |
-| `Motor_StopAll` | Coast every motor (duty 0) | — | all motors stopped | called by init/emergency/idle paths; calls `Motor_SetDuty` ×4 |
-
-### motor actuator — `Motor_SetDuty` in `motor.c`
-Signed duty actuator for speed modulation. Each motor is a two-PWM H-bridge driven
-by two TIM channels (FWD channel + REV channel). Mapping: LF fwd=TIM2_CH2/rev=TIM1_CH3,
-RF fwd=TIM3_CH1/rev=TIM3_CH2, LR fwd=TIM1_CH2/rev=TIM2_CH3, RR fwd=TIM4_CH3/rev=TIM4_CH4;
-ARR=3599 all timers (20 kHz). `duty>0` → fwd=`|duty|`, rev=0; `duty<0` → fwd=0, rev=`|duty|`;
-0 → both 0 (coast). `Motor_SetDirection`/`Motor_SetAll`/`Motor_StopAll` now delegate to
-`Motor_SetDuty`.
-
-| Fn | Responsibility | Input | Output / effect | Connections |
-|---|---|---|---|---|
-| `Motor_SetDuty` | Set signed PWM duty for one motor (clamped [-3599, +3599]) | `id`, `duty` (int16_t) | motor speed actuation | called by speed loop; drives two TIM channels per motor |
+| `Motor_StopAll` | Set every motor signed duty to 0 | — | all motors stopped/coasting | called by init/emergency/idle paths |
 
 ### pid — `pid.{h,c}`
 Generic PID with anti-windup. Three instances: `pid_yaw`, `pid_speed` (×4),
@@ -83,36 +75,21 @@ Generic PID with anti-windup. Three instances: `pid_yaw`, `pid_speed` (×4),
 | `PID_Reset` | Clear integral + prev_error | `pid*` | effect: state zeroed | called by `FSM_SetState` on transitions |
 
 ### kalman — `kalman.{h,c}`
-1-D Kalman filter fusing gyro rate + accel-derived angle into a yaw estimate (2-state Lauszus angle+bias structure).
+1-D Kalman filter fusing gyro rate + accel-derived angle into a yaw estimate.
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
 | `Kalman_Update` | Predict (angle += ω·dt, P += Q) then update (K = P/(P+R)) | `kf*`, `omega_dps`, `accel_angle`, `dt` | estimated angle (deg) | called by control tick; ω/accel from `MPU6050_Read`; output consumed by `pid_yaw` and `FSM_Turn_Update` |
-| `Kalman_SetR` | Set measurement-noise variance (clamped to ≥1e-6f) | `kf*`, R (deg²) | effect: filter R updated | called by `ParamStore_Load` or AT+SAVE handler |
-| `Kalman_GetR` | Query current R | `kf*` | R (deg²) | called by AT+GET handler |
-| `Kalman_GetBias` | Query current gyro bias | `kf*` | bias (dps) | called by AT+GET handler |
-| `Kalman_GetAngle` | Query current yaw estimate | `kf*` | angle (deg) | called by AT+GET handler |
-| `Kalman_SetBias` | Set gyro bias state | `kf*`, bias | effect: internal bias updated | called by `ParamStore_Load` |
 
-**R estimation:** runtime stationarity-based. Gate on gyro at rest (|ω_dps| < 1.0) but accumulate variance of `accel_angle` (deg²), not gyro rate. `Q` tuned ([[USER]] §empirical).
+`R` measured from 500 stationary samples; `Q` tuned ([[USER]] §empirical).
 
 ### mpu6050 — `mpu6050.{h,c}`
 MPU-6050 I2C driver (raw gyro + accel).
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `MPU6050_Init` | Wake device, verify WHO_AM_I == 0x68, set gyro/accel ranges | — | effect: device configured; early return on failed WHO_AM_I | called by `main`; calls HAL I2C |
+| `MPU6050_Init` | Wake device, set gyro/accel ranges | — | effect: device configured | called by `main`; calls HAL I2C |
 | `MPU6050_Read` | Read gyro Z rate + compute accel tilt angle | — | `omega_dps`, `accel_angle` (via out-params) | called by control tick; calls `HAL_I2C_Mem_Read`; feeds `Kalman_Update` |
-
-### paramstore — `paramstore.{h,c}`
-Persistent storage of Kalman R and gyro bias in internal Flash (last page 0x0801FC00, 1 KB on STM32F103RBTx).
-
-Record layout: `{magic: 0x4B414C31, float R, float bias}` (16 bytes, fits in 1 KB page).
-
-| Fn | Responsibility | Input | Output | Connections |
-|---|---|---|---|---|
-| `ParamStore_Load` | Read Flash page; validate magic + finite R/bias (≥1e-6f); restore to Kalman filter | — | effect: filter R/bias set from Flash or defaults on invalid/missing data | called by `main` after `Kalman_Init`; calls `Kalman_SetR`, `Kalman_SetBias` |
-| `ParamStore_Save` | Write current Kalman R/bias + magic to Flash page (erase + program) | — | effect: page written (atomic from main loop, never ISR) | called by main loop when AT+SAVE flag is set (flag set by `HC06_Parse` in RX ISR) |
 
 ### encoder — `encoder.{h,c}`
 DIY Hall-sensor wheel encoder. RPM from pulse period: `RPM = 60 / T_pulse_s`,
@@ -154,14 +131,11 @@ EMERGENCY  → IDLE        : BT AT reset
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `FSM_Init` | Initialize IDLE or retain a pre-init emergency latch | — | effect: safe stopped state | called by `main`; calls `Motor_StopAll` |
-| `FSM_SetState` | Apply a non-emergency state transition | target state | success/failure; stopped targets for safe/future states | called by deferred HC-06 processing |
-| `FSM_SetDirection` | Map forward/left/right/stop to automatic or MANUAL motion | motion | effect: state/motion target updated | called by HC-06 command processing |
-| `FSM_RequestEmergencyFromISR` | Latch EMERGENCY and stop motors immediately | — | effect: emergency dominates later dispatch | called by PA6 LL EXTI ISR |
-| `FSM_ResetEmergency` | Clear EMERGENCY only when active-low PA6 is released and no EXTI is pending | — | success/failure; returns to IDLE on success | called by `AT+RST` processing |
-| `FSM_Dispatch` | Refresh signed per-wheel speed targets for the current state | — | effect: setpoints updated; unsupported future states stop | called by control loop before speed PID |
-| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and `Motor_SetDuty`; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
-| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and `Motor_SetDuty`; checks `TOF_IsObstacle` |
+| `FSM_Init` | Set state IDLE | — | effect: state=IDLE | called by `main` |
+| `FSM_SetState` | Transition + reset relevant controllers | target state | effect: state changed | called by `HC06_Parse`, shock ISR, handlers; calls `PID_Reset` |
+| `FSM_Dispatch` | Run current state's handler this tick | tick ctx (yaw, speeds, ToF) | effect: handler ran | called by control tick; calls the per-state handlers below |
+| `FSM_Straight_Update` | Yaw-PID straight drive | yaw est, dt | effect: per-side motor command | calls `PID_Update(pid_yaw)` and signed-duty motor output; checks `TOF_IsObstacle`→`FSM_SetState(AVOID)` |
+| `FSM_LineTrace_Update` | Centroid-PID line follow | centroid error, dt | effect: inner/outer speed | calls `PID_Update(pid_line)` and signed-duty motor output; checks `TOF_IsObstacle` |
 | `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, `target_deg` | effect: pivot; on done stop + →STRAIGHT | calls `Motor_SetDirection`/`Motor_StopAll`, `FSM_SetState(STRAIGHT)` |
 | `FSM_Avoid_Update` | S-curve decel then →TURN, then →STRAIGHT | ToF, dt | effect: avoidance chain | calls `SCurve_Update`, `FSM_SetState(TURN/STRAIGHT)` |
 | `FSM_Manual_Update` | Hold manual drive from last BT cmd | — | effect: motors per cmd | calls `Motor_*` |
@@ -169,21 +143,21 @@ EMERGENCY  → IDLE        : BT AT reset
 ### hc06 — `hc06.{h,c}`
 USART2 Bluetooth AT-command interface. Commands: `AT+FWD`→STRAIGHT,
 `AT+LEFT`/`AT+RIGHT`→TURN 90°, `AT+STOP`→IDLE, `AT+MAN`→MANUAL, `AT+RST`→EMERGENCY
-reset, `AT+SAVE` (persist R/bias to Flash), `AT+GET` (return R, BIAS, YAW as scaled integers).
+reset.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
 | `HC06_Init` | Start USART2 DMA RX into static line buffer | — | effect: RX armed | called by `main`; calls HAL UART/DMA |
-| `HC06_OnReceive` | Accumulate DMA bytes and publish one complete static command | rx byte | effect: pending command set; no blocking transmit/state change | called by USART2 DMA callback |
-| `HC06_Process` | Consume and parse a pending command in main context | — | effect: FSM action, parameter output, or save flag | called before `FSM_Dispatch`; performs bounded command handoff |
+| `HC06_OnReceive` | Accumulate bytes; on terminator hand off line | rx byte/buf | effect: buffer filled | called by USART2 ISR; calls `HC06_Parse` |
+| `HC06_Parse` | Map an AT command string to a state change | `cmd` (const char*) | effect: state change | called by `HC06_OnReceive`; calls `FSM_SetState` |
 
 ### lcd — `lcd.{h,c}`
 I2C character LCD (PCF8574 backpack) status display.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `LCD_Init` | Probe configurable PCF8574 address (default 0x27) and init 4-bit mode | — | availability flag; absent LCD returns safely | called by `main`; uses 5 ms I2C timeouts |
-| `LCD_Update` | Render current FSM state and yaw/MPU status | state name, yaw, MPU status | effect: two 16-character lines refreshed | called every 200 ms when LCD is available |
+| `LCD_Init` | Init LCD in 4-bit/I2C mode | — | effect: LCD ready | called by `main`; calls HAL I2C |
+| `LCD_Update` | Render state + key sensor values | tick ctx (state, yaw, dist) | effect: LCD refreshed | called by control tick (every 20 ticks); calls HAL I2C |
 
 ### vl53l1x — `vl53l1x.{h,c}`
 Wrapper over the ST VL53L1X API for 3 multi-drop sensors (`TOF_FRONT/LEFT/RIGHT`).

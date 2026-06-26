@@ -29,8 +29,8 @@ proceeds through CubeMX boilerplate → code → verify.
 ## Phase 0 — Base Project & Bring-up
 - **Gate (USER):** power board, connect ST-Link via SWD ([[USER]] §Phase 0).
   Board: standard Nucleo-F103RB (on-board ST-Link/V2-1).
-- **CubeMX:** device **STM32F103RB**; HSE/PLL clock to 72 MHz; SysTick; toolchain
-  CMake. Generate base project.
+- **CubeMX:** device **STM32F103RB**; no HSE installed, so use HSI/2 × PLL16 =
+  64 MHz; SysTick; toolchain CMake. Generate base project.
 - **Code:** none beyond generated skeleton.
 - **Verify:** project builds; an empty program flashes and runs (e.g. a heartbeat
   on a free GPIO if available). ST-Link attach via `usbipd-wsl` skill.
@@ -39,29 +39,32 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Gate (USER):** connect the shield's two direction inputs per motor using the
   canonical shield-pin/MCU-pin map in [[USER]] §Phase 1; motor supply and MCU
   share ground.
-- **CubeMX:** eight push-pull GPIO outputs, initialized LOW. TIM1 PWM is not used.
-- **Code:** `motor.{h,c}` — `Motor_Init`, `Motor_SetDirection`, `Motor_SetAll`,
-  `Motor_StopAll` ([[ARCHITECTURE]] §motor).
-- **Verify:** test one wheel at a time: both inputs LOW stops; the first input
-  drives forward; the second input drives reverse; firmware never drives both
-  inputs HIGH.
+- **CubeMX:** eight TIM PWM outputs, ARR=3199 and prescaler=0 for 20 kHz at the
+  64 MHz timer clocks. TIM3 uses partial remap for RF PB4/PB5.
+- **Code:** `motor.{h,c}` — `Motor_Init`, `Motor_SetDuty`,
+  `Motor_SetDirection`, `Motor_SetAll`, `Motor_StopAll`
+  ([[ARCHITECTURE]] §motor).
+- **Verify:** tested one wheel at a time on hardware (2026-06-26): LF/RF/LR/RR
+  each stop at duty 0, run forward with positive duty, and run reverse with
+  negative duty. Firmware never drives both directions with non-zero compare
+  values for one motor.
 
 ## Phase 2 — Bluetooth Manual Comms (HC-06)
 - **Gate (USER):** HC-06 on USART2 (cross TX/RX), PA2/PA3 ([[USER]] §Phase 2).
-- **CubeMX:** USART2 + DMA RX (DMA1 Channel 6 for USART2_RX on F1 mapping; USART2+DMA were already present in the .ioc so no CubeMX regeneration was required). Also serves as bench debug UART ([[DECISIONS]] §D3).
+- **CubeMX:** USART2 + DMA RX (also serves as bench debug UART, [[DECISIONS]] §D3).
 - **Code:** `hc06.{h,c}` — DMA RX, `HC06_OnReceive`, `HC06_Parse` AT-command map
   ([[ARCHITECTURE]] §hc06).
 - **Verify:** AT-command loopback; phone pairs and commands change state.
-  Baud: 115200 (user's HC-06 reconfigured off the 9600 default).
-  Verify done via Windows Bluetooth virtual COM port at 115200.
-  Motor actuation intentionally deferred to the Phase 6 FSM seam —
-  `HC06_Parse` currently echoes the mapped state name only.
 
 ## Phase 3 — IMU + Kalman Yaw (MPU-6050)
-- **Gate (USER):** MPU-6050 on I2C1 PB6/PB7, AD0→GND (slave addr 0x68) ([[USER]] §Phase 3).
-- **CubeMX:** I2C1 (standard/fast mode).
-- **Code:** `mpu6050.{h,c}` (MPU6050_Init with WHO_AM_I check; raw gyro rate + accel-derived tilt angle), `kalman.{h,c}` (2-state angle+bias Lauszus filter; `Kalman_Update`), `paramstore.{h,c}` (Flash Load/Save at 0x0801FC00, magic 0x4B414C31, record={R, bias}). Runtime stationarity-based R estimation: gate on gyro (|ω| < 1 dps at rest) but accumulate variance of accel_angle. AT+SAVE (sets volatile flag in RX ISR; main loop performs Flash write). AT+GET (returns R, BIAS, YAW as scaled integers over USART2).
-- **Verify:** MPU-6050 WHO_AM_I=0x68 confirmed; collect stationary samples, R = Var(accel_angle) computed and persisted; yaw streamed over USART2 as centi-degrees (~20 Hz); at-rest drift < 1 deg/min; AT+GET returns all params; AT+SAVE persists across reboot ([[REVIEW]], [[USER]] §empirical). **Status:** implemented / pending-hardware-verification.
+- **Gate (USER):** MPU-6050 on the resolved shared I2C bus. PB6/PB7 is banned
+  by bring-up findings; planned I2C1 remap is PB8/PB9, which requires clearing
+  the current RR motor TIM4_CH3/CH4 conflict first ([[USER]] §Phase 3).
+- **CubeMX:** I2C1 with remap enabled after the pin conflict is resolved
+  (standard/fast mode).
+- **Code:** `mpu6050.{h,c}` (raw gyro+accel), `kalman.{h,c}` (`Kalman_Update`).
+- **Verify:** collect 500 stationary gyro samples over USART2 → variance = `R`;
+  yaw output streams over USART2 ([[REVIEW]], [[USER]] §empirical).
 
 ## Phase 4 — Hall Encoder + Speed PID
 - **Gate (USER):** Hall sensors + wheel magnets; FL→PB0, FR→PB1, LR→PB2,
@@ -81,14 +84,14 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** 1 m straight lateral deviation; 90° turn angular error ([[REVIEW]]).
 
 ## Phase 6 — FSM + LCD + Manual + Emergency
-- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6 ([[USER]] §Phase 6).
-- **CubeMX:** PA6 EXTI6 with pull-up and both-edge trigger; keep the generated
-  EXTI IRQ path on LL.
+- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6; buzzer PC0
+  ([[USER]] §Phase 6).
+- **CubeMX:** GPIO PC0 output; PA6 EXTI6 with pull-up and both-edge trigger;
+  keep the generated EXTI IRQ path on LL.
 - **Code:** `fsm.{h,c}` (7-state machine + transitions + dispatch), `lcd.{h,c}`;
   wire MANUAL entry/exit and shock-EXTI → EMERGENCY ([[ARCHITECTURE]] §fsm).
 - **Verify:** state + sensors show on LCD; manual mode toggles via HC-06; shock
-  triggers EMERGENCY and overrides all states; reset returns to IDLE.
-  **Status:** implemented / pending-hardware-verification.
+  triggers EMERGENCY and overrides all states; buzzer sounds on emergency.
 
 ## Phase 7 — Line Tracing
 - **Gate (USER):** tracking module analog out → PA0 ([[USER]] §Phase 7).
