@@ -196,3 +196,29 @@ it must be validated on hardware before the Phase 4 `< 5%` number is trusted.
 To enable that Phase 4 measurement, a new `Encoder_GetCount(wheel)` accessor and a
 per-wheel USART2 telemetry line were added (`SPD=`/`CNT=`, see [[REVIEW]] §Phase 4
 bench tuning). No control logic, gains, or encoder math changed.
+
+## D12 — Phase 5 uses yaw-PID setpoint steering plus gyro-integrated turn completion
+
+**Decided and implemented 2026-06-29 (commit 8e4f2ef).** Phase 5 stays software-only:
+no CubeMX regeneration or new hardware gate was needed. Straight and turn behavior
+is implemented inside the central FSM and feeds the existing per-wheel speed PID
+loop through RPM setpoints instead of writing motor duty directly.
+
+- Straight mode captures the current yaw on `STRAIGHT` entry, arms a jerk-limited
+  `SCurve` ramp to `FSM_DRIVE_RPM`, and runs `pid_yaw` as an outer loop. Its
+  correction offsets left/right wheel RPM targets (`base - corr`, `base + corr`),
+  while the existing speed PID loop remains the inner actuator loop.
+- Turn mode applies the requested pivot direction, integrates `fabsf(omega_dps) * dt`,
+  stops at the placeholder `FSM_TURN_TARGET_DEG` of 90°, then returns to `STRAIGHT`
+  and re-captures yaw.
+- `FSM_Dispatch(yaw, omega_dps, dt)` is now called after `MPU6050_Read` and
+  `Kalman_Update`, so Phase 5 receives fresh yaw/gyro data. The speed loop still
+  consumes `FSM_GetSpeedSetpoint(wheel)` and applies `Motor_SetDuty` through the
+  per-wheel speed PID.
+- `scurve.{h,c}` is a small standalone module; `SCurve_Init(sc, target, accel_max,
+  jerk)` records absolute acceleration and jerk limits, and `SCurve_Update(sc, dt)`
+  advances ACCEL→CRUISE or DECEL→DONE without dynamic allocation.
+
+All yaw gains, the turn target, ramp acceleration, jerk, and yaw-correction sign
+remain tuning placeholders until hardware measurement. Build verification passed;
+hardware verification is still pending.
