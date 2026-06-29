@@ -26,7 +26,7 @@ typedef enum
 } FSM_Motion;
 
 void FSM_Init(void);
-void FSM_Dispatch(void);
+void FSM_Dispatch(float yaw, float omega_dps, float dt);
 uint8_t FSM_SetState(FSM_State state);
 void FSM_SetDirection(FSM_Motion motion);
 uint8_t FSM_ResetEmergency(void);

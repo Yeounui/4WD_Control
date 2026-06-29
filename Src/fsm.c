@@ -2,9 +2,19 @@
 
 #include "main.h"
 #include "motor.h"
+#include "pid.h"
+#include "scurve.h"
+
+#include <math.h>
 
 #define FSM_DRIVE_RPM 80.0f
 #define FSM_TURN_RPM  60.0f
+#define FSM_YAW_KP 0.0f             /* Tunable placeholder: yaw proportional gain. */
+#define FSM_YAW_KI 0.0f             /* Tunable placeholder: yaw integral gain. */
+#define FSM_YAW_KD 0.0f             /* Tunable placeholder: yaw derivative gain. */
+#define FSM_TURN_TARGET_DEG 90.0f   /* Tunable placeholder: commanded turn angle. */
+#define FSM_ACCEL_RATE_RPM_S 200.0f /* Tunable placeholder: straight ramp acceleration limit. */
+#define FSM_JERK_RPM_S2 1000.0f     /* Tunable placeholder: straight ramp jerk limit. */
 
 static volatile FSM_State current_state = FSM_STATE_IDLE;
 static volatile uint8_t emergency_latched;
@@ -12,6 +22,11 @@ static volatile uint8_t fsm_initialized;
 static FSM_Motion turn_motion = FSM_MOTION_LEFT;
 static FSM_Motion manual_motion = FSM_MOTION_STOP;
 static float speed_setpoint[MOTOR_COUNT];
+static PID pid_yaw;
+static SCurve straight_ramp;
+static float target_yaw;
+static uint8_t straight_armed;
+static float turn_accum_deg;
 
 static void FSM_StopTargets(void)
 {
@@ -54,11 +69,46 @@ static void FSM_ApplyMotion(FSM_Motion motion)
   }
 }
 
+static void FSM_Straight_Update(float yaw, float dt)
+{
+  float base;
+  float corr;
+
+  if (straight_armed == 0U)
+  {
+    target_yaw = yaw;
+    PID_Reset(&pid_yaw);
+    SCurve_Init(&straight_ramp, FSM_DRIVE_RPM, FSM_ACCEL_RATE_RPM_S, FSM_JERK_RPM_S2);
+    straight_armed = 1U;
+  }
+
+  base = SCurve_Update(&straight_ramp, dt);
+  corr = PID_Update(&pid_yaw, target_yaw, yaw, dt);
+  FSM_SetSideTargets(base - corr, base + corr);
+  /* Sign convention left=base-corr, right=base+corr is to be verified at tuning; harmless while Kp=0. */
+}
+
+static void FSM_Turn_Update(float omega_dps, float dt)
+{
+  FSM_ApplyMotion(turn_motion);
+  turn_accum_deg += fabsf(omega_dps) * dt;
+  if (turn_accum_deg >= FSM_TURN_TARGET_DEG)
+  {
+    FSM_StopTargets();
+    Motor_StopAll();
+    (void)FSM_SetState(FSM_STATE_STRAIGHT);
+  }
+}
+
 void FSM_Init(void)
 {
   fsm_initialized = 1U;
   turn_motion = FSM_MOTION_LEFT;
   manual_motion = FSM_MOTION_STOP;
+  PID_Init(&pid_yaw, FSM_YAW_KP, FSM_YAW_KI, FSM_YAW_KD,
+           -FSM_DRIVE_RPM, FSM_DRIVE_RPM);
+  straight_armed = 0U;
+  turn_accum_deg = 0.0f;
   FSM_StopTargets();
   if (emergency_latched != 0U)
   {
@@ -71,7 +121,7 @@ void FSM_Init(void)
   Motor_StopAll();
 }
 
-void FSM_Dispatch(void)
+void FSM_Dispatch(float yaw, float omega_dps, float dt)
 {
   if (emergency_latched != 0U)
   {
@@ -81,11 +131,11 @@ void FSM_Dispatch(void)
   switch (current_state)
   {
     case FSM_STATE_STRAIGHT:
-      FSM_ApplyMotion(FSM_MOTION_FORWARD);
+      FSM_Straight_Update(yaw, dt);
       break;
 
     case FSM_STATE_TURN:
-      FSM_ApplyMotion(turn_motion);
+      FSM_Turn_Update(omega_dps, dt);
       break;
 
     case FSM_STATE_MANUAL:
@@ -125,7 +175,15 @@ uint8_t FSM_SetState(FSM_State state)
   }
 
   current_state = state;
-  if ((state == FSM_STATE_IDLE) || (state == FSM_STATE_EMERGENCY)
+  if (state == FSM_STATE_STRAIGHT)
+  {
+    straight_armed = 0U;
+  }
+  else if (state == FSM_STATE_TURN)
+  {
+    turn_accum_deg = 0.0f;
+  }
+  else if ((state == FSM_STATE_IDLE) || (state == FSM_STATE_EMERGENCY)
       || (state == FSM_STATE_LINE_TRACE) || (state == FSM_STATE_AVOID))
   {
     FSM_StopTargets();

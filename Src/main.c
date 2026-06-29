@@ -203,7 +203,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now;
     float dt;
-    float omega_dps;
+    float omega_dps = 0.0f;
     float accel_angle;
     uint8_t sample_ok;
 
@@ -226,7 +226,6 @@ int main(void)
     }
 
     now = HAL_GetTick();
-    FSM_Dispatch();
     dt = (float)(now - last_tick) / 1000.0f;
     if (dt <= 0.0f)
     {
@@ -337,6 +336,8 @@ int main(void)
       stat_sum = 0.0f;
       stat_sumsq = 0.0f;
     }
+
+    FSM_Dispatch(yaw, omega_dps, dt);
 
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {

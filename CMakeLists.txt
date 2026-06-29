@@ -52,6 +52,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/paramstore.c
     Src/encoder.c
     Src/pid.c
+    Src/scurve.c
     Src/fsm.c
     Src/lcd.c
     Src/soft_i2c.c
