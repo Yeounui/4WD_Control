@@ -12,5 +12,6 @@ void Encoder_Init(void);
 void Encoder_OnPulse(MotorId wheel);
 void Encoder_Sample(float dt);
 float Encoder_GetSpeed(MotorId wheel);
+uint32_t Encoder_GetCount(MotorId wheel);
 
 #endif /* ENCODER_H */

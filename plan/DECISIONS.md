@@ -177,3 +177,22 @@ all of them with no motor pin moves and serves the shared bus (MPU-6050 now; LCD
 VL53L1X ×3 later). Cost: `mpu6050.c` and `lcd.c` call a `soft_i2c` module instead
 of `HAL_I2C_*`. **Status: implemented; pending hardware re-verification of RF
 reverse + IMU/LCD on the soft bus.**
+
+## D11 — Source correction: encoder API/units; Phase 4 speed telemetry added
+
+**Corrected 2026-06-29 from the actual code.** [[ARCHITECTURE]] §encoder
+previously documented a non-existent `Encoder_Update` returning `m/s` and a
+"pulse period" formula. The real `encoder.{h,c}` API is:
+
+- `Encoder_OnPulse(wheel)` (LL EXTI Hall ISR) increments `volatile pulse_count`.
+- `Encoder_Sample(dt)` (called each `SPEED_PERIOD_MS` in the speed loop) computes
+  `speed_rpm = (Δpulses / ENCODER_COUNTS_PER_REV) / dt · 60`.
+- `Encoder_GetSpeed(wheel)` returns **RPM** (not m/s); the speed PID and FSM
+  setpoints (`FSM_DRIVE_RPM`) are consistently in RPM.
+
+`ENCODER_COUNTS_PER_REV` is a placeholder `20.0f` (Hall magnets × 2, both edges);
+it must be validated on hardware before the Phase 4 `< 5%` number is trusted.
+
+To enable that Phase 4 measurement, a new `Encoder_GetCount(wheel)` accessor and a
+per-wheel USART2 telemetry line were added (`SPD=`/`CNT=`, see [[REVIEW]] §Phase 4
+bench tuning). No control logic, gains, or encoder math changed.

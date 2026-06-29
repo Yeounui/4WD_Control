@@ -39,6 +39,30 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 9** — all metrics above re-measured end-to-end; Kalman-vs-complementary
   drift comparison graph produced from USART2→CSV data.
 
+## Phase 4 Bench Tuning — speed telemetry
+
+Firmware emits a per-wheel telemetry line on **USART2** every `STREAM_PERIOD_MS`
+(50 ms), alongside the existing `YAW=` line (bench: HC-06 detached, USB-TTL on
+PA2/PA3 — [[DECISIONS]] §D3):
+
+```
+SPD=sLF,mLF,sRF,mRF,sLR,mLR,sRR,mRR;CNT=cLF,cRF,cLR,cRR
+```
+
+- `s*`/`m*` = commanded vs measured speed in **deci-RPM** (÷10 → RPM); order LF, RF, LR, RR.
+- `c*` = cumulative Hall pulse count (`Encoder_GetCount`), same order.
+
+**Procedure:**
+1. **Validate encoder scale first.** In IDLE (motors off), hand-rotate one wheel
+   exactly N turns; `counts/rev = ΔCNT / N`. If it differs from
+   `ENCODER_COUNTS_PER_REV` (`20.0f`), correct the constant and reflash — RPM is
+   meaningless until this is right ([[DECISIONS]] §D11).
+2. **Measure + tune.** Command FORWARD (80 RPM setpoint); from `SPD` compute
+   per-wheel `|m − s| / s` at steady state. Adjust `SPEED_KP/KI/KD` (`main.c`,
+   currently 5/0/0), rebuild + reflash, repeat until all four wheels are < 5%.
+
+Gains are compile-time (no runtime gain command); each iteration is a reflash.
+
 ## Data Collection
 
 - Yaw / gyro / Kalman samples stream over **USART2** (bench, HC-06 detached —

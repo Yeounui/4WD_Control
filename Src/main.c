@@ -341,14 +341,38 @@ int main(void)
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {
       char buffer[32];
+      char spdbuf[128];
       int length;
+      int speed_length;
       int32_t yaw_centi;
+      long setpoint_drpm[MOTOR_COUNT];
+      long measured_drpm[MOTOR_COUNT];
+      unsigned long counts[MOTOR_COUNT];
+      MotorId wheel;
 
       yaw_centi = (int32_t)(yaw * 100.0f);
       length = snprintf(buffer, sizeof(buffer), "YAW=%ld\r\n", (long)yaw_centi);
       if (length > 0)
       {
         HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+      }
+      for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+      {
+        setpoint_drpm[wheel] = (long)(FSM_GetSpeedSetpoint(wheel) * 10.0f);
+        measured_drpm[wheel] = (long)(Encoder_GetSpeed(wheel) * 10.0f);
+        counts[wheel] = (unsigned long)Encoder_GetCount(wheel);
+      }
+      speed_length = snprintf(spdbuf, sizeof(spdbuf),
+                              "SPD=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld;CNT=%lu,%lu,%lu,%lu\r\n",
+                              setpoint_drpm[MOTOR_LF], measured_drpm[MOTOR_LF],
+                              setpoint_drpm[MOTOR_RF], measured_drpm[MOTOR_RF],
+                              setpoint_drpm[MOTOR_LR], measured_drpm[MOTOR_LR],
+                              setpoint_drpm[MOTOR_RR], measured_drpm[MOTOR_RR],
+                              counts[MOTOR_LF], counts[MOTOR_RF],
+                              counts[MOTOR_LR], counts[MOTOR_RR]);
+      if (speed_length > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)spdbuf, (uint16_t)speed_length, HAL_MAX_DELAY);
       }
       last_stream_tick = now;
     }

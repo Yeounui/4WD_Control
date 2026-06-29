@@ -53,3 +53,12 @@ float Encoder_GetSpeed(MotorId wheel)
 
   return speed_rpm[wheel];
 }
+
+uint32_t Encoder_GetCount(MotorId wheel)
+{
+  if (wheel >= MOTOR_COUNT) {
+    return 0U;
+  }
+
+  return pulse_count[wheel];
+}

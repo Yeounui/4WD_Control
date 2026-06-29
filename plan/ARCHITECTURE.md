@@ -42,7 +42,7 @@ Runs every 10 ms, in order:
 
 ### ISR entry points
 - **LL EXTI Hall (PB0/PB1/PB2/PA4)** → clear the pending line, then
-  `Encoder_Update` (per wheel).
+  `Encoder_OnPulse` (per wheel).
 - **LL EXTI Shock (PA6)** → clear the pending line, then
   `FSM_SetState(EMERGENCY)` — overrides all states.
 - **USART2 DMA RX** → `HC06_OnReceive` → `HC06_Parse` on line terminator.
@@ -92,13 +92,17 @@ MPU-6050 I2C driver (raw gyro + accel).
 | `MPU6050_Read` | Read gyro Z rate + compute accel tilt angle | — | `omega_dps`, `accel_angle` (via out-params) | called by control tick; calls `HAL_I2C_Mem_Read`; feeds `Kalman_Update` |
 
 ### encoder — `encoder.{h,c}`
-DIY Hall-sensor wheel encoder. RPM from pulse period: `RPM = 60 / T_pulse_s`,
-`speed = RPM·2π·r/60`.
+DIY Hall-sensor wheel encoder. RPM from pulse count over a fixed sample window:
+`RPM = (Δpulses / ENCODER_COUNTS_PER_REV) / dt · 60`. `ENCODER_COUNTS_PER_REV`
+is Hall magnets × 2 (both EXTI edges counted); placeholder `20.0f`, tune to
+hardware.
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `Encoder_Update` | On Hall pulse, compute rpm/speed from tick delta | `enc*`, `wheel_radius_m` | effect: `enc.rpm`, `enc.speed_ms` updated | called by LL EXTI Hall ISR; reads TIM tick |
-| `Encoder_GetSpeed` | Return latest speed for one wheel | `enc*` | speed (m/s) | called by speed loop; feeds `PID_Update(pid_speed)` |
+| `Encoder_OnPulse` | Increment cumulative pulse count for one wheel | `wheel` | effect: `pulse_count[wheel]++` | called by LL EXTI Hall ISR |
+| `Encoder_Sample` | Per-window: compute RPM from pulse-count delta | `dt` | effect: `speed_rpm[wheel]` updated | called by speed loop each `SPEED_PERIOD_MS` |
+| `Encoder_GetSpeed` | Return latest speed for one wheel | `wheel` | speed (**RPM**) | called by speed loop; feeds `PID_Update(pid_speed)` |
+| `Encoder_GetCount` | Return cumulative pulse count (encoder-scale validation / telemetry) | `wheel` | pulses (uint32) | read by USART2 `CNT=` telemetry |
 
 ### scurve — `scurve.{h,c}`
 S-curve speed profile (ACCEL→CRUISE→DECEL→DONE) over a speed setpoint.
