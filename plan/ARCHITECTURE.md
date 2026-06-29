@@ -9,25 +9,28 @@ file states each unit's responsibility, I/O, and call connections.
 ```
 Inc/   main.h motor.h mpu6050.h kalman.h pid.h encoder.h
        paramstore.h soft_i2c.h hc06.h lcd.h fsm.h scurve.h
-       line_sensor.h
+       line_sensor.h vl53l1x.h
 Src/   main.c motor.c mpu6050.c kalman.c pid.c encoder.c
        paramstore.c soft_i2c.c hc06.c lcd.c fsm.c scurve.c
-       line_sensor.c
+       line_sensor.c vl53l1x.c
 Drivers/
-└── VL53L1X/   vl53l1_api.{h,c}   (ST official API, UM2356)
+└── VL53L1X/
+    ├── core/inc, core/src       STSW-IMG007 VL53L1X API (UM2356)
+    └── platform/inc, platform/src
+                                STM32 `soft_i2c` platform shim
 ```
 
 ## Entry Points & Control-Loop Call Graph
 
 The system has one synchronous super-loop plus four asynchronous ISR/callback entry
 points. The active control path is rooted in the main loop after `dt` is computed;
-do not read the per-wheel PID, S-curve, line sensor, or FSM state handlers as
+do not read the per-wheel PID, S-curve, line sensor, ToF, or FSM state handlers as
 orphaned.
 
 ### `main()` — boot + super loop
 - Init order: CubeMX peripheral init → `Motor_Init` → `Encoder_Init` → `FSM_Init`
-  → `HC06_Init` → `SoftI2C_Init` → `LineSensor_Init` → `MPU6050_Init` →
-  `Kalman_Init` → speed PID init → `LCD_Init`.
+  → `HC06_Init` → `SoftI2C_Init` → `TOF_Init_All` → `LineSensor_Init` →
+  `MPU6050_Init` → `Kalman_Init` → speed PID init → `LCD_Init`.
 - Then loops; `HC06_Process` and pending parameter saves are checked every pass,
   while sensor/control/display work is paced from `HAL_GetTick()`.
 
@@ -40,8 +43,9 @@ orphaned.
 | Speed loop | `Encoder_Sample` → `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Motor_SetDuty` ×4 | each `SPEED_PERIOD_MS` |
 | IMU + yaw estimate | `MPU6050_Read` → `Kalman_Update` | every control pass |
 | Line sensor | `LineSensor_Read` | every control pass; ADC1-DMA refreshes its buffer asynchronously |
-| FSM/profile/state | `FSM_Dispatch(yaw, omega_dps, dt, line_error, line_active)`; STRAIGHT calls `SCurve_Update` + `PID_Update(pid_yaw)`, LINE_TRACE calls `PID_Update(pid_line)` | every control pass after sensor reads |
-| Telemetry | `YAW=`, `SPD=`, `CNT=` over USART2 | each `STREAM_PERIOD_MS` |
+| ToF obstacle sensing | `TOF_UpdateAll` → `TOF_IsObstacle` → `FSM_SetObstacle` | each `TOF_PERIOD_MS` after successful `TOF_Init_All` |
+| FSM/profile/state | `FSM_Dispatch(yaw, omega_dps, dt, line_error, line_active)`; STRAIGHT calls `SCurve_Update` + `PID_Update(pid_yaw)`, LINE_TRACE calls `PID_Update(pid_line)`, AVOID runs S-curve decel → gyro turn → clear drive | every control pass after sensor reads |
+| Telemetry | `YAW=`, `SPD=`, `CNT=`, `TOF=`, `OBS=` over USART2 | each `STREAM_PERIOD_MS` |
 | Display | `LCD_Update` | each `LCD_PERIOD_MS` |
 
 ### ISR / callback entry points
@@ -96,7 +100,9 @@ hardware I2C conflicts with motor PWM on this pin stack (see [[DECISIONS]] §D10
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
 | `SoftI2C_Init` | Configure the software I2C pins/open-drain behavior | — | bus ready | called by `main` before I2C devices |
-| `SoftI2C_*` transactions | Start/address/read/write/stop byte-level transfer | address/register/data | I2C transfer status/data | called by `mpu6050`, `lcd`, and later VL53L1X wrapper |
+| `SoftI2C_MemRead/MemWrite` | 8-bit register transactions | address/register/data | I2C transfer status/data | called by `mpu6050`, `lcd` |
+| `SoftI2C_MemRead16/MemWrite16` | 16-bit register transactions | address/register/data | I2C transfer status/data | called by the VL53L1X ST API platform shim |
+| `SoftI2C_MasterTransmit`, `SoftI2C_IsDeviceReady` | raw transmit / ACK probe | address/data | I2C transfer status | called by I2C device drivers as needed |
 
 ### paramstore — `paramstore.{h,c}`
 Flash-backed persistence for tunable Kalman parameters.
@@ -147,7 +153,7 @@ acceleration limit, jerk limit, and phase.
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
 | `SCurve_Init` | Reset profile at 0 speed and arm ACCEL phase | `sc*`, target, `accel_max`, `jerk` | effect: profile armed with absolute accel/jerk limits | called by FSM straight entry |
-| `SCurve_Update` | Advance one tick; rate-limit acceleration by jerk and clamp at target | `sc*`, `dt` | current speed setpoint | called by `FSM_Straight_Update`; output feeds `FSM_SetSideTargets` |
+| `SCurve_Update` | Advance one tick; rate-limit acceleration by jerk and clamp at target | `sc*`, `dt` | current speed setpoint | called by `FSM_Straight_Update` and AVOID decel; output feeds `FSM_SetSideTargets` |
 
 ### fsm — `fsm.{h,c}`
 Central 7-state machine. Holds current state + per-state context. It publishes
@@ -162,11 +168,11 @@ IDLE       → STRAIGHT    : auto start / AT+FWD
 IDLE       → LINE_TRACE  : line detected / AT+LINE
 IDLE       → MANUAL      : HC-06 manual command
 STRAIGHT   → TURN        : AT+LEFT / AT+RIGHT
-STRAIGHT   → AVOID       : obstacle (VL53L1X; future)
-LINE_TRACE → AVOID       : obstacle (VL53L1X; future)
+STRAIGHT   → AVOID       : obstacle (VL53L1X)
+LINE_TRACE → AVOID       : obstacle (VL53L1X)
 TURN       → STRAIGHT    : integrated |ω|·dt ≥ θ_goal
-AVOID      → TURN        : start avoidance rotation (future)
-AVOID      → STRAIGHT    : avoidance complete (future)
+AVOID      → TURN        : after S-curve decel reaches zero
+AVOID      → STRAIGHT    : after avoidance turn + clear drive window
 MANUAL     → IDLE        : AT+STOP / disconnect path
 ANY        → EMERGENCY   : shock EXTI — overrides all
 EMERGENCY  → IDLE        : BT AT reset, only if shock input is clear
@@ -175,19 +181,20 @@ EMERGENCY  → IDLE        : BT AT reset, only if shock input is clear
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
 | `FSM_Init` | Initialize state/context and yaw/line PID placeholder gains | — | effect: state=IDLE unless emergency latched | called by `main` |
-| `FSM_SetState` | Transition + reset relevant per-state context | target state | effect: state changed; STRAIGHT re-arms yaw capture; TURN clears accumulator; LINE_TRACE resets line PID gate | called by `HC06_Parse`, shock/reset paths, handlers |
+| `FSM_SetState` | Transition + reset relevant per-state context | target state | effect: state changed; STRAIGHT re-arms yaw capture; TURN clears accumulator; LINE_TRACE resets line PID gate; AVOID arms decel | called by `HC06_Parse`, shock/reset paths, handlers |
+| `FSM_SetObstacle` | Latch a ToF obstacle event into the FSM | obstacle bool | effect: STRAIGHT/LINE_TRACE enter AVOID | called by main after `TOF_IsObstacle` |
 | `FSM_Dispatch` | Run current state's handler after fresh sensor reads | `yaw`, `omega_dps`, `dt`, `line_error`, `line_active` | effect: speed setpoints updated or motors stopped | called by control tick |
 | `FSM_Straight_Update` | Yaw-PID straight drive with S-curve base RPM | yaw est, dt | effect: left/right RPM targets set to `base ± corr` | calls `SCurve_Update`, `PID_Update(pid_yaw)`, `FSM_SetSideTargets` |
 | `FSM_LineTrace_Update` | Line-PID drive using tracking-module error | line error, active flag, dt | effect: left/right RPM targets set to `base ± corr`; inactive sensor clears targets and motion gate | calls `PID_Update(pid_line)`, `FSM_SetSideTargets` |
 | `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, implicit 90° placeholder target | effect: pivot RPM targets; on done stop + →STRAIGHT | calls `FSM_ApplyMotion`, `FSM_SetState(STRAIGHT)` |
-| `FSM_ApplyMotion` | Map forward/left/right/stop to per-wheel RPM targets | motion | effect: `speed_setpoint[]` updated | used by TURN and MANUAL paths |
-| `FSM_IsMotionEnabled` | Tell the speed loop whether PID output may drive motors | — | bool | true for STRAIGHT/TURN, true for LINE_TRACE only after valid line-sensor dispatch, true for non-stop MANUAL, false for idle/fail-safe states |
+| `FSM_Avoid_Update` | Obstacle chain: S-curve decel → left pivot → short clear drive → STRAIGHT | `omega_dps`, `dt` | effect: staged RPM targets and state transition | called by `FSM_Dispatch` in AVOID |
+| `FSM_ApplyMotion` | Map forward/left/right/stop to per-wheel RPM targets | motion | effect: `speed_setpoint[]` updated | used by TURN, AVOID, and MANUAL paths |
+| `FSM_IsMotionEnabled` | Tell the speed loop whether PID output may drive motors | — | bool | true for STRAIGHT/TURN/AVOID, true for LINE_TRACE only after valid line-sensor dispatch, true for non-stop MANUAL, false for idle/fail-safe states |
 | `FSM_GetSpeedSetpoint` | Return one wheel's current RPM target | wheel | RPM setpoint | consumed by speed PID loop |
 
-`AVOID` currently fails safe by zeroing targets until the VL53L1X module lands.
 Phase 5 yaw gains, turn angle, S-curve accel/jerk limits, Phase 7 line gains,
-line calibration, and correction signs are tuning placeholders until hardware
-verification.
+line calibration, Phase 8 obstacle thresholds, and correction signs are tuning
+placeholders until hardware verification.
 
 ### hc06 — `hc06.{h,c}`
 USART2 Bluetooth AT-command interface. Commands: `AT+FWD`→STRAIGHT,
@@ -210,20 +217,24 @@ I2C character LCD (PCF8574 backpack) status display on the software I2C bus.
 | `LCD_Update` | Render state + key sensor values | state name, yaw, MPU status | effect: LCD refreshed | called by control tick at `LCD_PERIOD_MS`; calls `soft_i2c` |
 
 ### vl53l1x — `vl53l1x.{h,c}`
-Wrapper over the ST VL53L1X API for 3 multi-drop sensors (`TOF_FRONT/LEFT/RIGHT`).
-Not implemented yet; it will use the same software I2C bus.
+Wrapper over the vendored STSW-IMG007 VL53L1X API for 3 multi-drop sensors
+(`TOF_FRONT/LEFT/RIGHT`). The ST platform layer is adapted to the project
+software I2C bus through `SoftI2C_MemRead16/MemWrite16`; no hardware I2C
+peripheral is enabled.
 
 **XSHUT multi-drop address sequence (canonical):**
 ```
 Default I2C addr 0x52. With all XSHUT LOW (all off):
   1. Release XSHUT_FRONT → power Front only → set addr 0x54
   2. Release XSHUT_LEFT  → power Left only  → set addr 0x56
-  3. Release XSHUT_RIGHT → Right keeps default 0x52
+  3. Release XSHUT_RIGHT → power Right only → set addr 0x58
 ```
 (Pattern confirmed against the references in [[DECISIONS]] §D1.)
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `TOF_Init_All` | Run XSHUT sequence + assign 3 addresses + ST-API init | — | effect: 3 sensors ranging on distinct addrs | called by `main`/Phase 8; drives XSHUT GPIO, calls `VL53L1X_SetI2CAddress` + ST API |
-| `TOF_ReadDistance_mm` | Read one sensor's distance | `id` | distance (mm) | called by control tick + `TOF_IsObstacle`; calls ST API ranging |
-| `TOF_IsObstacle` | Threshold check for one direction | `id`, `threshold_mm` | bool | called by FSM straight/line handlers; calls `TOF_ReadDistance_mm` |
+| `TOF_Init_All` | Run XSHUT sequence, boot each sensor, assign addresses, run ST `DataInit`/`StaticInit`, set short-distance timed ranging, start measurement | — | effect: 3 sensors ranging on distinct addrs | called by `main` after `SoftI2C_Init`; drives XSHUT GPIO and calls ST API |
+| `TOF_UpdateAll` | Poll all initialized sensors once | — | success if any fresh valid range was read | called by main at `TOF_PERIOD_MS` |
+| `TOF_ReadDistance_mm` | Read one sensor if ST API reports data ready | `id`, out distance | distance (mm), sample cache updated | calls `VL53L1_GetMeasurementDataReady`, `VL53L1_GetRangingMeasurementData`, `VL53L1_ClearInterruptAndStartMeasurement` |
+| `TOF_IsObstacle` | Threshold check using cached Front/Left/Right samples | — | bool | called by main before `FSM_SetObstacle` |
+| `TOF_GetSample` | Return cached distance/ready/obstacle/present state | `id` | `TOF_Sample` | used by telemetry and tuning |

@@ -234,6 +234,87 @@ uint8_t SoftI2C_MemWrite(uint8_t dev_addr, uint8_t reg, const uint8_t *buf, uint
   return 0U;
 }
 
+uint8_t SoftI2C_MemRead16(uint8_t dev_addr, uint16_t reg, uint8_t *buf, uint16_t len)
+{
+  uint16_t i;
+
+  if ((buf == NULL) && (len != 0U))
+  {
+    return 1U;
+  }
+
+  start();
+  if (write_byte((uint8_t)(dev_addr & 0xFEU)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+  if (write_byte((uint8_t)(reg >> 8)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+  if (write_byte((uint8_t)(reg & 0xFFU)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+
+  start();
+  if (write_byte((uint8_t)(dev_addr | 0x01U)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+
+  for (i = 0U; i < len; i++)
+  {
+    buf[i] = read_byte((i + 1U) < len);
+  }
+  stop();
+
+  return 0U;
+}
+
+uint8_t SoftI2C_MemWrite16(uint8_t dev_addr, uint16_t reg, const uint8_t *buf, uint16_t len)
+{
+  uint16_t i;
+
+  if ((buf == NULL) && (len != 0U))
+  {
+    return 1U;
+  }
+
+  start();
+  if (write_byte((uint8_t)(dev_addr & 0xFEU)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+  if (write_byte((uint8_t)(reg >> 8)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+  if (write_byte((uint8_t)(reg & 0xFFU)) != 0U)
+  {
+    stop();
+    return 1U;
+  }
+
+  for (i = 0U; i < len; i++)
+  {
+    if (write_byte(buf[i]) != 0U)
+    {
+      stop();
+      return 1U;
+    }
+  }
+  stop();
+
+  return 0U;
+}
+
 uint8_t SoftI2C_MasterTransmit(uint8_t dev_addr, const uint8_t *buf, uint16_t len)
 {
   uint16_t i;

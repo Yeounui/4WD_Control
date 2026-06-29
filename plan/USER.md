@@ -28,9 +28,9 @@ wiring source** — other documents link here instead of repeating the table.
 | EXTI2 | PB2 | EXTI | Hall sensor RL | LL |
 | EXTI4 | PA4 (Arduino A2) | EXTI | Hall sensor RR | LL |
 | EXTI6 | PA6 (Arduino D12) | EXTI | Shock sensor | LL |
-| GPIO | PA1 (Arduino A1) | Output | XSHUT VL53L1X Front | HAL |
-| GPIO | PA7 (Arduino D11) | Output | XSHUT VL53L1X Left | HAL |
-| GPIO | PA8 (Arduino D7) | Output | XSHUT VL53L1X Right | HAL |
+| GPIO | PA1 (Arduino A1) | Output | XSHUT VL53L1X Front | LL GPIO |
+| GPIO | PA7 (Arduino D11) | Output | XSHUT VL53L1X Left | LL GPIO |
+| GPIO | PA8 (Arduino D7) | Output | XSHUT VL53L1X Right | LL GPIO |
 | GPIO | PC0 | Output | Buzzer | HAL |
 
 > **Board identity (resolved 2026-06-24):** standard **Nucleo-F103RB** with on-board
@@ -60,23 +60,21 @@ procedure is in [[PHASES]]; this section is the wiring checklist the user acts o
   not power motors from the MCU rail.
 - **Phase 2 — HC-06**: HC-06 RX←PA2 (TX), HC-06 TX→PA3 (RX), VCC (3.3–6 V per
   module), GND. Cross TX/RX. (Bench debug also uses PA2/PA3 before HC-06 attach.)
-- **Phase 3 — MPU-6050**: planned I2C1 remap SCL→PB8, SDA→PB9, VCC 3.3 V,
-  GND, AD0→GND (address 0x68). Do not wire until the PB8/PB9 RR motor conflict
-  is resolved. Shares the I2C1 bus.
+- **Phase 3 — MPU-6050**: SDA→PB7, SCL→PB6 on the software I2C bus, VCC 3.3 V,
+  GND, AD0→GND (address 0x68). Use external pull-ups on SDA/SCL if the modules do
+  not already provide a suitable bus pull-up set.
 - **Phase 4 — 4× Hall sensor + magnets**: signal lines FL→PB0, FR→PB1, RL→PB2,
   RR→PA4. Mount one
   (or more) magnet(s) per wheel; record magnets-per-revolution for the encoder
   constant.
-- **Phase 6 — I2C LCD + shock sensor + buzzer**: LCD (PCF8574 backpack) uses
-  the resolved shared I2C1 bus; current planned remap is SCL→PB8, SDA→PB9 after
-  the RR motor conflict is cleared. VCC 5 V, GND. Shock sensor signal→PA6.
-  Buzzer→PC0, GND.
+- **Phase 6 — I2C LCD + shock sensor + buzzer**: LCD (PCF8574 backpack) shares
+  the software I2C bus on SCL→PB6 and SDA→PB7. VCC 5 V, GND. Shock sensor
+  signal→PA6. Buzzer→PC0, GND.
 - **Phase 7 — tracking module**: analog out→PA0 (ADC1_CH0), VCC, GND.
-- **Phase 8 — 3× VL53L1X**: all sensors use the resolved shared I2C1 bus;
-  current planned remap is all SCL→PB8, all SDA→PB9 after the RR motor conflict
-  is cleared. XSHUT Front→PA1, Left→PA7, Right→PA8. VCC, GND each.
-  Pull-ups on SDA/SCL (one set for the bus). Address separation is done in
-  firmware via XSHUT — see [[ARCHITECTURE]] §vl53l1x.
+- **Phase 8 — 3× VL53L1X**: all sensors share the software I2C bus on SCL→PB6
+  and SDA→PB7. XSHUT Front→PA1, Left→PA7, Right→PA8. VCC, GND each. Pull-ups on
+  SDA/SCL (one set for the bus). Address separation is done in firmware via XSHUT
+  — see [[ARCHITECTURE]] §vl53l1x.
 
 ## CubeMX Generation (per phase) — done by Claude, not the user
 

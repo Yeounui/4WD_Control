@@ -32,6 +32,7 @@
 #include "line_sensor.h"
 #include "paramstore.h"
 #include "pid.h"
+#include "vl53l1x.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -39,6 +40,7 @@
 #define STAT_GYRO_THRESH  1.0f
 #define STAT_WINDOW       200U
 #define SPEED_PERIOD_MS   10U
+#define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
 /* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
@@ -138,6 +140,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   uint32_t last_tick;
   uint32_t last_speed_tick;
+  uint32_t last_tof_tick;
   uint32_t last_stream_tick;
   uint32_t last_lcd_tick;
   uint32_t stat_count;
@@ -149,12 +152,22 @@ int main(void)
   float line_error;
   uint8_t line_ok;
   uint8_t mpu_ok;
+  uint8_t tof_ok;
 
   Motor_Init();
   Encoder_Init();
   FSM_Init();
   HC06_Init();
   SoftI2C_Init();
+  tof_ok = (TOF_Init_All() == 0U) ? 1U : 0U;
+  if (tof_ok != 0U)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"TOF OK\r\n", 8U, HAL_MAX_DELAY);
+  }
+  else
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"TOF FAIL\r\n", 10U, HAL_MAX_DELAY);
+  }
   line_ok = (LineSensor_Init((const LineSensorConfig *)0) == HAL_OK) ? 1U : 0U;
 
   if (MPU6050_Init() == 0U)
@@ -194,6 +207,7 @@ int main(void)
   LCD_Update(FSM_GetStateName(), yaw, mpu_ok);
   last_tick = HAL_GetTick();
   last_speed_tick = last_tick;
+  last_tof_tick = last_tick;
   last_stream_tick = last_tick;
   last_lcd_tick = last_tick;
 
@@ -349,14 +363,25 @@ int main(void)
       line_error = line_sample.error;
       line_ok = line_sample.active;
     }
+
+    if ((tof_ok != 0U) && ((now - last_tof_tick) >= TOF_PERIOD_MS))
+    {
+      if (TOF_UpdateAll() == 0U)
+      {
+        FSM_SetObstacle(TOF_IsObstacle());
+      }
+      last_tof_tick = now;
+    }
     FSM_Dispatch(yaw, omega_dps, dt, line_error, line_ok);
 
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {
       char buffer[32];
       char spdbuf[128];
+      char tofbuf[64];
       int length;
       int speed_length;
+      int tof_length;
       int32_t yaw_centi;
       long setpoint_drpm[MOTOR_COUNT];
       long measured_drpm[MOTOR_COUNT];
@@ -386,6 +411,26 @@ int main(void)
       if (speed_length > 0)
       {
         HAL_UART_Transmit(&huart2, (uint8_t *)spdbuf, (uint16_t)speed_length, HAL_MAX_DELAY);
+      }
+      if (tof_ok != 0U)
+      {
+        TOF_Sample tof_front;
+        TOF_Sample tof_left;
+        TOF_Sample tof_right;
+
+        tof_front = TOF_GetSample(TOF_FRONT);
+        tof_left = TOF_GetSample(TOF_LEFT);
+        tof_right = TOF_GetSample(TOF_RIGHT);
+        tof_length = snprintf(tofbuf, sizeof(tofbuf),
+                              "TOF=%u,%u,%u;OBS=%u\r\n",
+                              (unsigned int)tof_front.distance_mm,
+                              (unsigned int)tof_left.distance_mm,
+                              (unsigned int)tof_right.distance_mm,
+                              (unsigned int)TOF_IsObstacle());
+        if (tof_length > 0)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)tofbuf, (uint16_t)tof_length, HAL_MAX_DELAY);
+        }
       }
       last_stream_tick = now;
     }

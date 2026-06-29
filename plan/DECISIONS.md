@@ -246,3 +246,28 @@ buffer without polling. The HAL ADC half/full complete callbacks are owned by
 Line PID gains, sensor raw range, center, invert setting, and steering sign remain
 tuning placeholders. Build verification passed with `cmake --build build/Debug
 --clean-first`; hardware line-follow verification is still pending.
+
+## D14 — Phase 8 vendors STSW-IMG007 VL53L1X API and activates AVOID
+
+**Decided and implemented 2026-06-29 (working tree).** The user-provided
+`STSW-IMG007` package contains the official VL53L1X API. The needed core and
+platform headers/sources were copied into `Drivers/VL53L1X/`; the Windows/Ranging
+Sensor board `platform.c` was replaced with a project-local STM32 platform shim
+that routes the ST API's 16-bit register reads/writes through `soft_i2c` on
+PB6/PB7. Hardware I2C remains disabled per D10.
+
+Phase 8 adds `vl53l1x.{h,c}` as a wrapper around the ST API. `TOF_Init_All` uses
+XSHUT to boot Front/Left/Right one at a time, assigns 8-bit I2C addresses
+0x54/0x56/0x58 via `VL53L1_SetDeviceAddress`, runs `VL53L1_DataInit` and
+`VL53L1_StaticInit`, selects short distance mode, configures a 50 ms timing budget
+with 70 ms inter-measurement, and starts measurement. `main` polls ToF at
+`TOF_PERIOD_MS`, emits `TOF=<front>,<left>,<right>;OBS=<0|1>` telemetry on
+USART2, and calls `FSM_SetObstacle` when cached thresholds are crossed.
+
+The FSM AVOID state is now active: obstacle from STRAIGHT or LINE_TRACE latches
+AVOID, runs S-curve decel to zero, performs a gyro-integrated left pivot using the
+existing turn constants, then drives forward briefly and returns to STRAIGHT.
+
+Build verification passed with `cmake --build build/Debug --clean-first`; linked
+RAM use is 6152 B / 20 KB (30.04%) and FLASH use is 60004 B / 128 KB (45.78%).
+Hardware ranging and obstacle-threshold tuning are still pending.

@@ -55,13 +55,29 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     Src/scurve.c
     Src/fsm.c
     Src/line_sensor.c
+    Src/vl53l1x.c
     Src/lcd.c
     Src/soft_i2c.c
+    Drivers/VL53L1X/core/src/vl53l1_api.c
+    Drivers/VL53L1X/core/src/vl53l1_api_calibration.c
+    Drivers/VL53L1X/core/src/vl53l1_api_core.c
+    Drivers/VL53L1X/core/src/vl53l1_api_debug.c
+    Drivers/VL53L1X/core/src/vl53l1_api_preset_modes.c
+    Drivers/VL53L1X/core/src/vl53l1_api_strings.c
+    Drivers/VL53L1X/core/src/vl53l1_core.c
+    Drivers/VL53L1X/core/src/vl53l1_core_support.c
+    Drivers/VL53L1X/core/src/vl53l1_error_strings.c
+    Drivers/VL53L1X/core/src/vl53l1_register_funcs.c
+    Drivers/VL53L1X/core/src/vl53l1_silicon_core.c
+    Drivers/VL53L1X/core/src/vl53l1_wait.c
+    Drivers/VL53L1X/platform/src/vl53l1_platform.c
 )
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
+    Drivers/VL53L1X/core/inc
+    Drivers/VL53L1X/platform/inc
 )
 
 # Add project symbols (macros)
