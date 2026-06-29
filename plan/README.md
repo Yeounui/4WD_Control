@@ -12,15 +12,16 @@ user calls, plus a map of where everything else lives. Retrieve all other facts
   software bit-bang I2C on PB6/PB7 (`soft_i2c`); the hardware I2C1 peripheral is
   permanently disabled on this stack. The former "decide before Phase 3" blocker
   no longer applies.
-- **Implemented in code (committed):** Phases 1–6. Phase 5 straight-line yaw hold,
-  gyro-integrated 90° turn completion, and jerk-limited S-curve ramping landed in
-  commit 8e4f2ef with tunable placeholder gains. Phases 7–8 (line follow,
-  VL53L1X) have no modules yet.
+- **Implemented in code:** Phases 1–7. Phase 7 line tracing adds
+  `line_sensor.{h,c}` for ADC1-DMA sampling and normalized PA0 tracking error;
+  `LINE_TRACE` now feeds `pid_line` output into left/right wheel RPM setpoints
+  through the FSM. Phase 8 (VL53L1X obstacle avoidance) has no module yet.
 - **HW-verified:** Phase 1 (2026-06-26), Phase 3 (2026-06-25). Phase 4 code is
   complete but **pending HW tuning** (per-wheel speed-tracking error < 5% not yet
-  measured). Phases 5–6 code are complete but **unverified** on hardware.
+  measured). Phases 5–7 code are complete but **unverified** on hardware.
 - **Next step:** Phase 4 hardware tuning + < 5% speed-tracking verification, then
-  tune Phase 5 yaw/turn/ramp parameters on hardware.
+  tune Phase 5 yaw/turn/ramp parameters and Phase 7 line PID/sign/calibration on
+  hardware.
 
 ## Document Map
 

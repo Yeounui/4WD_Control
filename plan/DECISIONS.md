@@ -222,3 +222,27 @@ loop through RPM setpoints instead of writing motor duty directly.
 All yaw gains, the turn target, ramp acceleration, jerk, and yaw-correction sign
 remain tuning placeholders until hardware measurement. Build verification passed;
 hardware verification is still pending.
+
+## D13 — Phase 7 line tracing uses ADC-DMA normalized error into FSM setpoint steering
+
+**Decided and implemented 2026-06-29 (working tree).** Phase 7 adds a small
+`line_sensor.{h,c}` module around ADC1 CH0 on PA0 with circular DMA. The module
+keeps an 8-sample static buffer, exposes a `LineSensorSample` snapshot with raw,
+normalized, error, fresh, and active fields, and treats `error = normalized - center`
+as the single-sensor line offset placeholder. `LineSensorConfig` carries raw min,
+raw max, center, and invert calibration fields for later hardware tuning.
+
+`LINE_TRACE` is now an active FSM state instead of a fail-safe stub. `AT+LINE`
+enters the state. `FSM_Dispatch` receives the latest line error and active flag
+from `main`; when the line sensor is inactive, the state clears its PID and speed
+targets and keeps motion disabled. When active, `pid_line` offsets left/right RPM
+setpoints around `FSM_DRIVE_RPM`, using the same inner per-wheel speed PID loop as
+STRAIGHT and TURN.
+
+ADC1 continuous conversion is enabled so `HAL_ADC_Start_DMA` refreshes the circular
+buffer without polling. The HAL ADC half/full complete callbacks are owned by
+`line_sensor.c` and guarded to `hadc1`.
+
+Line PID gains, sensor raw range, center, invert setting, and steering sign remain
+tuning placeholders. Build verification passed with `cmake --build build/Debug
+--clean-first`; hardware line-follow verification is still pending.

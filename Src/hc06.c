@@ -24,6 +24,7 @@ typedef enum {
   AT_RIGHT,
   AT_STOP,
   AT_MAN,
+  AT_LINE,
   AT_RST,
   AT_GET,
   AT_SAVE,
@@ -41,6 +42,7 @@ static const AT_CommandEntry AT_table[] = {
     {"AT+RIGHT", AT_RIGHT},
     {"AT+STOP",  AT_STOP},
     {"AT+MAN",   AT_MAN},
+    {"AT+LINE",  AT_LINE},
     {"AT+RST",   AT_RST},
     {"AT+GET",   AT_GET},
     {"AT+SAVE",  AT_SAVE}
@@ -93,6 +95,12 @@ static void HC06_Parse(const char *cmd) {
 
     case AT_MAN:
       if (FSM_SetState(FSM_STATE_MANUAL) != 0U) {
+        response = FSM_GetStateName();
+      }
+      break;
+
+    case AT_LINE:
+      if (FSM_SetState(FSM_STATE_LINE_TRACE) != 0U) {
         response = FSM_GetStateName();
       }
       break;

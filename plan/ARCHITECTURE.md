@@ -9,22 +9,25 @@ file states each unit's responsibility, I/O, and call connections.
 ```
 Inc/   main.h motor.h mpu6050.h kalman.h pid.h encoder.h
        paramstore.h soft_i2c.h hc06.h lcd.h fsm.h scurve.h
+       line_sensor.h
 Src/   main.c motor.c mpu6050.c kalman.c pid.c encoder.c
        paramstore.c soft_i2c.c hc06.c lcd.c fsm.c scurve.c
+       line_sensor.c
 Drivers/
 └── VL53L1X/   vl53l1_api.{h,c}   (ST official API, UM2356)
 ```
 
 ## Entry Points & Control-Loop Call Graph
 
-The system has one synchronous super-loop plus three asynchronous ISR entry
+The system has one synchronous super-loop plus four asynchronous ISR/callback entry
 points. The active control path is rooted in the main loop after `dt` is computed;
-do not read the per-wheel PID, S-curve, or FSM state handlers as orphaned.
+do not read the per-wheel PID, S-curve, line sensor, or FSM state handlers as
+orphaned.
 
 ### `main()` — boot + super loop
 - Init order: CubeMX peripheral init → `Motor_Init` → `Encoder_Init` → `FSM_Init`
-  → `HC06_Init` → `SoftI2C_Init` → `MPU6050_Init` → `Kalman_Init` → speed PID init
-  → `LCD_Init`.
+  → `HC06_Init` → `SoftI2C_Init` → `LineSensor_Init` → `MPU6050_Init` →
+  `Kalman_Init` → speed PID init → `LCD_Init`.
 - Then loops; `HC06_Process` and pending parameter saves are checked every pass,
   while sensor/control/display work is paced from `HAL_GetTick()`.
 
@@ -36,16 +39,19 @@ do not read the per-wheel PID, S-curve, or FSM state handlers as orphaned.
 | Timebase | compute `dt` from `HAL_GetTick()` | every control pass with `dt > 0` |
 | Speed loop | `Encoder_Sample` → `Encoder_GetSpeed` ×4 → `PID_Update(pid_speed)` ×4 → `Motor_SetDuty` ×4 | each `SPEED_PERIOD_MS` |
 | IMU + yaw estimate | `MPU6050_Read` → `Kalman_Update` | every control pass |
-| FSM/profile/state | `FSM_Dispatch(yaw, omega_dps, dt)`; STRAIGHT calls `SCurve_Update` + `PID_Update(pid_yaw)` | every control pass after fresh yaw/gyro data |
+| Line sensor | `LineSensor_Read` | every control pass; ADC1-DMA refreshes its buffer asynchronously |
+| FSM/profile/state | `FSM_Dispatch(yaw, omega_dps, dt, line_error, line_active)`; STRAIGHT calls `SCurve_Update` + `PID_Update(pid_yaw)`, LINE_TRACE calls `PID_Update(pid_line)` | every control pass after sensor reads |
 | Telemetry | `YAW=`, `SPD=`, `CNT=` over USART2 | each `STREAM_PERIOD_MS` |
 | Display | `LCD_Update` | each `LCD_PERIOD_MS` |
 
-### ISR entry points
+### ISR / callback entry points
 - **LL EXTI Hall (PB0/PB1/PB2/PA4)** → clear the pending line, then
   `Encoder_OnPulse` (per wheel).
 - **LL EXTI Shock (PA6)** → clear the pending line, then
   `FSM_RequestEmergencyFromISR` — latches emergency and stops motors if the FSM is initialized.
 - **USART2 DMA RX** → `HC06_OnReceive`; command parsing is drained by `HC06_Process`.
+- **ADC1 DMA half/full complete callbacks** → `line_sensor.c` marks a fresh sample
+  after confirming `hadc == &hadc1`.
 
 ---
 
@@ -121,6 +127,18 @@ hardware.
 | `Encoder_GetSpeed` | Return latest speed for one wheel | `wheel` | speed (**RPM**) | called by speed loop; feeds `PID_Update(pid_speed)` |
 | `Encoder_GetCount` | Return cumulative pulse count (encoder-scale validation / telemetry) | `wheel` | pulses (uint32) | read by USART2 `CNT=` telemetry |
 
+### line_sensor — `line_sensor.{h,c}`
+ADC1-DMA tracking-module input on PA0. The module owns the circular DMA sample
+buffer and exposes a normalized single-sensor line offset placeholder until
+hardware calibration defines the real raw range and center.
+
+| Fn | Responsibility | Input | Output | Connections |
+|---|---|---|---|---|
+| `LineSensor_Init` | Apply default or caller-provided calibration and start ADC1 DMA | optional `LineSensorConfig*` | HAL status; active flag set on success | called by `main` after CubeMX ADC/DMA init |
+| `LineSensor_Read` | Snapshot averaged raw ADC, normalized value, error, fresh, active | — | `LineSensorSample` | called by control tick before `FSM_Dispatch` |
+| `LineSensor_Get*` helpers | Convenience access to latest raw/normalized/error values | — | raw, normalized, centroid alias, error | optional diagnostics/tuning |
+| ADC callbacks | Mark fresh samples on half/full DMA completion | `hadc*` | effect: fresh flag set for ADC1 | called by HAL DMA IRQ path |
+
 ### scurve — `scurve.{h,c}`
 Jerk-limited S-curve speed profile over a speed setpoint. It is standalone,
 allocation-free, and stores current speed, current acceleration, target,
@@ -141,7 +159,7 @@ stop motors directly.
 **Transitions:**
 ```
 IDLE       → STRAIGHT    : auto start / AT+FWD
-IDLE       → LINE_TRACE  : line detected (tracking module)
+IDLE       → LINE_TRACE  : line detected / AT+LINE
 IDLE       → MANUAL      : HC-06 manual command
 STRAIGHT   → TURN        : AT+LEFT / AT+RIGHT
 STRAIGHT   → AVOID       : obstacle (VL53L1X; future)
@@ -156,23 +174,25 @@ EMERGENCY  → IDLE        : BT AT reset, only if shock input is clear
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|
-| `FSM_Init` | Initialize state/context and yaw PID placeholder gains | — | effect: state=IDLE unless emergency latched | called by `main` |
-| `FSM_SetState` | Transition + reset relevant per-state context | target state | effect: state changed; STRAIGHT re-arms yaw capture; TURN clears accumulator | called by `HC06_Parse`, shock/reset paths, handlers |
-| `FSM_Dispatch` | Run current state's handler after fresh IMU/Kalman update | `yaw`, `omega_dps`, `dt` | effect: speed setpoints updated or motors stopped | called by control tick |
+| `FSM_Init` | Initialize state/context and yaw/line PID placeholder gains | — | effect: state=IDLE unless emergency latched | called by `main` |
+| `FSM_SetState` | Transition + reset relevant per-state context | target state | effect: state changed; STRAIGHT re-arms yaw capture; TURN clears accumulator; LINE_TRACE resets line PID gate | called by `HC06_Parse`, shock/reset paths, handlers |
+| `FSM_Dispatch` | Run current state's handler after fresh sensor reads | `yaw`, `omega_dps`, `dt`, `line_error`, `line_active` | effect: speed setpoints updated or motors stopped | called by control tick |
 | `FSM_Straight_Update` | Yaw-PID straight drive with S-curve base RPM | yaw est, dt | effect: left/right RPM targets set to `base ± corr` | calls `SCurve_Update`, `PID_Update(pid_yaw)`, `FSM_SetSideTargets` |
+| `FSM_LineTrace_Update` | Line-PID drive using tracking-module error | line error, active flag, dt | effect: left/right RPM targets set to `base ± corr`; inactive sensor clears targets and motion gate | calls `PID_Update(pid_line)`, `FSM_SetSideTargets` |
 | `FSM_Turn_Update` | Gyro-integrated pivot turn | `omega_dps`, `dt`, implicit 90° placeholder target | effect: pivot RPM targets; on done stop + →STRAIGHT | calls `FSM_ApplyMotion`, `FSM_SetState(STRAIGHT)` |
 | `FSM_ApplyMotion` | Map forward/left/right/stop to per-wheel RPM targets | motion | effect: `speed_setpoint[]` updated | used by TURN and MANUAL paths |
-| `FSM_IsMotionEnabled` | Tell the speed loop whether PID output may drive motors | — | bool | true for STRAIGHT/TURN and non-stop MANUAL, false for idle/fail-safe states |
+| `FSM_IsMotionEnabled` | Tell the speed loop whether PID output may drive motors | — | bool | true for STRAIGHT/TURN, true for LINE_TRACE only after valid line-sensor dispatch, true for non-stop MANUAL, false for idle/fail-safe states |
 | `FSM_GetSpeedSetpoint` | Return one wheel's current RPM target | wheel | RPM setpoint | consumed by speed PID loop |
 
-`LINE_TRACE` and `AVOID` currently fail safe by zeroing targets until their sensor
-modules land. Phase 5 yaw gains, turn angle, S-curve accel/jerk limits, and yaw
-correction sign are tuning placeholders until hardware verification.
+`AVOID` currently fails safe by zeroing targets until the VL53L1X module lands.
+Phase 5 yaw gains, turn angle, S-curve accel/jerk limits, Phase 7 line gains,
+line calibration, and correction signs are tuning placeholders until hardware
+verification.
 
 ### hc06 — `hc06.{h,c}`
 USART2 Bluetooth AT-command interface. Commands: `AT+FWD`→STRAIGHT,
-`AT+LEFT`/`AT+RIGHT`→TURN 90°, `AT+STOP`→IDLE, `AT+MAN`→MANUAL, `AT+RST`→EMERGENCY
-reset.
+`AT+LINE`→LINE_TRACE, `AT+LEFT`/`AT+RIGHT`→TURN 90°, `AT+STOP`→IDLE,
+`AT+MAN`→MANUAL, `AT+RST`→EMERGENCY reset.
 
 | Fn | Responsibility | Input | Output / effect | Connections |
 |---|---|---|---|---|

@@ -29,6 +29,7 @@
 #include "mpu6050.h"
 #include "soft_i2c.h"
 #include "kalman.h"
+#include "line_sensor.h"
 #include "paramstore.h"
 #include "pid.h"
 
@@ -145,6 +146,8 @@ int main(void)
   float stored_r;
   float stored_bias;
   float yaw;
+  float line_error;
+  uint8_t line_ok;
   uint8_t mpu_ok;
 
   Motor_Init();
@@ -152,6 +155,7 @@ int main(void)
   FSM_Init();
   HC06_Init();
   SoftI2C_Init();
+  line_ok = (LineSensor_Init((const LineSensorConfig *)0) == HAL_OK) ? 1U : 0U;
 
   if (MPU6050_Init() == 0U)
   {
@@ -166,6 +170,7 @@ int main(void)
 
   Kalman_Init();
   yaw = 0.0f;
+  line_error = 0.0f;
   if (ParamStore_Load(&stored_r, &stored_bias) != 0U)
   {
     Kalman_SetR(stored_r);
@@ -337,7 +342,14 @@ int main(void)
       stat_sumsq = 0.0f;
     }
 
-    FSM_Dispatch(yaw, omega_dps, dt);
+    {
+      LineSensorSample line_sample;
+
+      line_sample = LineSensor_Read();
+      line_error = line_sample.error;
+      line_ok = line_sample.active;
+    }
+    FSM_Dispatch(yaw, omega_dps, dt, line_error, line_ok);
 
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {
@@ -454,7 +466,7 @@ static void MX_ADC1_Init(void)
   */
   hadc1.Instance = ADC1;
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
