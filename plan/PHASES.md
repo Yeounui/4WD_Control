@@ -57,11 +57,11 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** AT-command loopback; phone pairs and commands change state.
 
 ## Phase 3 — IMU + Kalman Yaw (MPU-6050)
-- **Gate (USER):** MPU-6050 on the resolved shared I2C bus. PB6/PB7 is banned
-  by bring-up findings; planned I2C1 remap is PB8/PB9, which requires clearing
-  the current RR motor TIM4_CH3/CH4 conflict first ([[USER]] §Phase 3).
-- **CubeMX:** I2C1 with remap enabled after the pin conflict is resolved
-  (standard/fast mode).
+- **Gate (USER):** MPU-6050 on the resolved software I2C bus: SCL→PB6,
+  SDA→PB7, AD0→GND ([[USER]] §Phase 3).
+- **CubeMX:** no hardware I2C peripheral; keep I2C1 disabled. The bus is driven
+  by `soft_i2c` because hardware I2C pin options conflict with the motor shield
+  ([[DECISIONS]] §D10).
 - **Code:** `mpu6050.{h,c}` (raw gyro+accel), `kalman.{h,c}` (`Kalman_Update`).
 - **Verify:** collect 500 stationary gyro samples over USART2 → variance = `R`;
   yaw output streams over USART2 ([[REVIEW]], [[USER]] §empirical).
@@ -84,7 +84,7 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** 1 m straight lateral deviation; 90° turn angular error ([[REVIEW]]).
 
 ## Phase 6 — FSM + LCD + Manual + Emergency
-- **Gate (USER):** I2C LCD on I2C1; shock sensor PA6; buzzer PC0
+- **Gate (USER):** I2C LCD on the software I2C bus; shock sensor PA6; buzzer PC0
   ([[USER]] §Phase 6).
 - **CubeMX:** GPIO PC0 output; PA6 EXTI6 with pull-up and both-edge trigger;
   keep the generated EXTI IRQ path on LL.
@@ -101,13 +101,13 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** car follows a line; centroid PID stable.
 
 ## Phase 8 — ToF Obstacle Avoidance (VL53L1X ×3)
-- **Gate (USER):** 3 VL53L1X on shared I2C1; XSHUT Front→PA1, Left→PA7,
-  Right→PA8; bus pull-ups ([[USER]] §Phase 8).
-- **CubeMX:** configure PA1/PA7/PA8 as initially-LOW outputs. Add
-  `Drivers/VL53L1X/` ST API to the CMake sources.
+- **Gate (USER):** 3 VL53L1X on the software I2C bus: SCL→PB6, SDA→PB7;
+  XSHUT Front→PA1, Left→PA7, Right→PA8; bus pull-ups ([[USER]] §Phase 8).
+- **CubeMX:** configure PA1/PA7/PA8 as initially-LOW outputs. Keep hardware I2C
+  disabled and add `Drivers/VL53L1X/` ST API to the CMake sources.
 - **Code:** `vl53l1x.{h,c}` — `TOF_Init_All` (XSHUT address sequence),
   `TOF_ReadDistance_mm`, `TOF_IsObstacle`; `FSM_Avoid_Update` (S-curve decel →
-  TURN → STRAIGHT). **Verify ST API static RAM footprint first** ([[OVERVIEW]]).
+  TURN → STRAIGHT). ST API footprint is within the STM32F103RB memory budget.
 - **Verify:** 3 sensors report on distinct addresses; Front/Left/Right distances;
   obstacle triggers AVOID chain.
 

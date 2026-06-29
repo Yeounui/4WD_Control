@@ -27,15 +27,18 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
   complete (commits c92e8ea/9464ac5/813ed5c/4eda73e); HW gain/COUNTS tuning and
   < 5% measurement still pending._
-- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Not started:
-  no commit (history skips Phase 4 → Phase 6) and no heading-hold/turn symbol in
-  `fsm.c`/`main.c`._
+- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Code
+  complete (commit 8e4f2ef); yaw gains, turn angle, ramp limits, and correction
+  sign remain unverified on hardware._
 - **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
   forces EMERGENCY from any state; reset returns to IDLE; buzzer fires. _Code
   complete (commit 8eb02af); unverified on hardware._
-- **Phase 7** — line follow stays on track around a test loop.
-- **Phase 8** — 3 sensors enumerate on 0x52/0x54/0x56; distance error < ±1 mm at
-  20 cm; obstacle triggers S-curve decel → TURN → STRAIGHT.
+- **Phase 7** — line follow stays on track around a test loop. _Code complete
+  (commit 9b3d18d); line PID/sign/calibration remain unverified on hardware._
+- **Phase 8** — 3 sensors enumerate on 0x54/0x56/0x58 after XSHUT address
+  assignment; distance error < ±1 mm at 20 cm; obstacle triggers S-curve decel →
+  TURN → STRAIGHT. _Code complete (commit 6f00a92); ranging and thresholds remain
+  unverified on hardware._
 - **Phase 9** — all metrics above re-measured end-to-end; Kalman-vs-complementary
   drift comparison graph produced from USART2→CSV data.
 
@@ -91,8 +94,9 @@ treating the jitter as a defect.
   placements collide (I2C1 PB6/7→SMBA on PB5; I2C1 remap PB8/9 = RR motor; I2C2
   PB10/11 = LR-reverse). The sensor bus is therefore a **software bit-bang I2C on
   PB6/PB7** (`soft_i2c`); never re-enable the hardware I2C1 peripheral on this stack.
-- **VL53L1X RAM footprint too large** — measure ST API static RAM before Phase 8
-  integration; if it threatens the budget, reduce ranging config or sensor count.
+- **VL53L1X RAM footprint too large** — current Debug build links at 6152 B RAM
+  and 60004 B FLASH with the STSW-IMG007 API. If later ranging options or modules
+  threaten the budget, reduce ranging config or sensor count.
 - **Turn drift from gyro integration** — fall back to the timer method baseline
   (±8°) if gyro integration underperforms, and record the gap.
 

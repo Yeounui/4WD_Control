@@ -225,7 +225,7 @@ hardware verification is still pending.
 
 ## D13 — Phase 7 line tracing uses ADC-DMA normalized error into FSM setpoint steering
 
-**Decided and implemented 2026-06-29 (working tree).** Phase 7 adds a small
+**Decided and implemented 2026-06-29 (commit 9b3d18d).** Phase 7 adds a small
 `line_sensor.{h,c}` module around ADC1 CH0 on PA0 with circular DMA. The module
 keeps an 8-sample static buffer, exposes a `LineSensorSample` snapshot with raw,
 normalized, error, fresh, and active fields, and treats `error = normalized - center`
@@ -249,7 +249,7 @@ tuning placeholders. Build verification passed with `cmake --build build/Debug
 
 ## D14 — Phase 8 vendors STSW-IMG007 VL53L1X API and activates AVOID
 
-**Decided and implemented 2026-06-29 (working tree).** The user-provided
+**Decided and implemented 2026-06-29 (commit 6f00a92).** The user-provided
 `STSW-IMG007` package contains the official VL53L1X API. The needed core and
 platform headers/sources were copied into `Drivers/VL53L1X/`; the Windows/Ranging
 Sensor board `platform.c` was replaced with a project-local STM32 platform shim
