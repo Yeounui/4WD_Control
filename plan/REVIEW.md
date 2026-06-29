@@ -52,16 +52,27 @@ SPD=sLF,mLF,sRF,mRF,sLR,mLR,sRR,mRR;CNT=cLF,cRF,cLR,cRR
 - `s*`/`m*` = commanded vs measured speed in **deci-RPM** (÷10 → RPM); order LF, RF, LR, RR.
 - `c*` = cumulative Hall pulse count (`Encoder_GetCount`), same order.
 
+`m` is derived from one ~10 ms (`SPEED_PERIOD_MS`) pulse-delta window, so its
+quantum is `6000 / ENCODER_COUNTS_PER_REV` RPM (≈300 RPM at the `20.0f`
+placeholder). Treat `m` as a **liveness/direction** readout only — it cannot
+resolve a 5% error. Use `CNT` deltas for the actual metric.
+
 **Procedure:**
 1. **Validate encoder scale first.** In IDLE (motors off), hand-rotate one wheel
    exactly N turns; `counts/rev = ΔCNT / N`. If it differs from
    `ENCODER_COUNTS_PER_REV` (`20.0f`), correct the constant and reflash — RPM is
    meaningless until this is right ([[DECISIONS]] §D11).
-2. **Measure + tune.** Command FORWARD (80 RPM setpoint); from `SPD` compute
-   per-wheel `|m − s| / s` at steady state. Adjust `SPEED_KP/KI/KD` (`main.c`,
-   currently 5/0/0), rebuild + reflash, repeat until all four wheels are < 5%.
+2. **Measure + tune.** Command FORWARD (80 RPM setpoint). Compute steady-state
+   average RPM per wheel from `CNT` over a multi-second window Δt:
+   `RPM_avg = (ΔCNT / ENCODER_COUNTS_PER_REV) / Δt × 60` (a few seconds so ±1
+   count is well under 5%); error = `|RPM_avg − 80| / 80`. Adjust `SPEED_KP/KI/KD`
+   (`main.c`, currently 5/0/0), rebuild + reflash, repeat until all four wheels
+   are < 5%.
 
 Gains are compile-time (no runtime gain command); each iteration is a reflash.
+The P-only loop (`Kp=5, Ki=0`) runs on the same coarse per-tick RPM and is
+expected to jitter/steady-state-droop — tune around it (add `Ki`) rather than
+treating the jitter as a defect.
 
 ## Data Collection
 
