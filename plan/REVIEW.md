@@ -24,10 +24,15 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
   expected `FSM_SetState`.
 - **Phase 3** — 500 stationary samples collected over USART2; variance recorded as
   `R`; yaw stream stable. Kalman drift metric measured.
-- **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%.
-- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°.
+- **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
+  complete (commits c92e8ea/9464ac5/813ed5c/4eda73e); HW gain/COUNTS tuning and
+  < 5% measurement still pending._
+- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Not started:
+  no commit (history skips Phase 4 → Phase 6) and no heading-hold/turn symbol in
+  `fsm.c`/`main.c`._
 - **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
-  forces EMERGENCY from any state; reset returns to IDLE; buzzer fires.
+  forces EMERGENCY from any state; reset returns to IDLE; buzzer fires. _Code
+  complete (commit 8eb02af); unverified on hardware._
 - **Phase 7** — line follow stays on track around a test loop.
 - **Phase 8** — 3 sensors enumerate on 0x52/0x54/0x56; distance error < ±1 mm at
   20 cm; obstacle triggers S-curve decel → TURN → STRAIGHT.
