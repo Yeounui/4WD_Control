@@ -366,20 +366,10 @@ uint8_t FSM_ResetEmergency(void)
   primask = __get_PRIMASK();
   __disable_irq();
 
-  if ((LL_GPIO_IsInputPinSet(SHOCK_GPIO_Port, SHOCK_Pin) == 0U)
-      || (LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_6) != RESET))
-  {
-    emergency_latched = 1U;
-    current_state = FSM_STATE_EMERGENCY;
-    reset_ok = 0U;
-  }
-  else
-  {
-    emergency_latched = 0U;
-    current_state = FSM_STATE_IDLE;
-    manual_motion = FSM_MOTION_STOP;
-    reset_ok = 1U;
-  }
+  emergency_latched = 0U;
+  current_state = FSM_STATE_IDLE;
+  manual_motion = FSM_MOTION_STOP;
+  reset_ok = 1U;
   FSM_StopTargets();
   Motor_StopAll();
 

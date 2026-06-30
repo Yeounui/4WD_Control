@@ -11,6 +11,8 @@ compile_commands.json
 .codegraph/
 .codex/
 .llama/
+.plan-rag/
+.plan-rag-backups/
 .mcp.json
 
 *.o
