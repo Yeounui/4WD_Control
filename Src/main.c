@@ -43,6 +43,9 @@
 #define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
+#define MOTOR_TEST_DUTY   2000
+#define MOTOR_TEST_MS     1000U
+#define MOTOR_TEST_GAP_MS 500U
 /* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
 #define SPEED_KP          5.0f
 #define SPEED_KI          0.0f
@@ -93,6 +96,9 @@ static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
+static uint8_t Hall_ReadLevel(MotorId wheel);
+static void MotorTest_Run(void);
+static const char *MotorTest_Name(MotorId wheel);
 
 /* USER CODE END PFP */
 
@@ -210,6 +216,7 @@ int main(void)
   last_tof_tick = last_tick;
   last_stream_tick = last_tick;
   last_lcd_tick = last_tick;
+  MotorTest_Run();
 
   /* USER CODE END 2 */
 
@@ -377,7 +384,7 @@ int main(void)
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {
       char buffer[32];
-      char spdbuf[128];
+      char spdbuf[160];
       char tofbuf[64];
       int length;
       int speed_length;
@@ -401,13 +408,17 @@ int main(void)
         counts[wheel] = (unsigned long)Encoder_GetCount(wheel);
       }
       speed_length = snprintf(spdbuf, sizeof(spdbuf),
-                              "SPD=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld;CNT=%lu,%lu,%lu,%lu\r\n",
+                              "SPD=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld;CNT=%lu,%lu,%lu,%lu;HALL=%u,%u,%u,%u\r\n",
                               setpoint_drpm[MOTOR_LF], measured_drpm[MOTOR_LF],
                               setpoint_drpm[MOTOR_RF], measured_drpm[MOTOR_RF],
                               setpoint_drpm[MOTOR_LR], measured_drpm[MOTOR_LR],
                               setpoint_drpm[MOTOR_RR], measured_drpm[MOTOR_RR],
                               counts[MOTOR_LF], counts[MOTOR_RF],
-                              counts[MOTOR_LR], counts[MOTOR_RR]);
+                              counts[MOTOR_LR], counts[MOTOR_RR],
+                              (unsigned int)Hall_ReadLevel(MOTOR_LF),
+                              (unsigned int)Hall_ReadLevel(MOTOR_RF),
+                              (unsigned int)Hall_ReadLevel(MOTOR_LR),
+                              (unsigned int)Hall_ReadLevel(MOTOR_RR));
       if (speed_length > 0)
       {
         HAL_UART_Transmit(&huart2, (uint8_t *)spdbuf, (uint16_t)speed_length, HAL_MAX_DELAY);
@@ -941,6 +952,99 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static const char *MotorTest_Name(MotorId wheel)
+{
+  switch (wheel)
+  {
+    case MOTOR_LF:
+      return "LF";
+
+    case MOTOR_RF:
+      return "RF";
+
+    case MOTOR_LR:
+      return "LR";
+
+    case MOTOR_RR:
+      return "RR";
+
+    case MOTOR_COUNT:
+    default:
+      return "INVALID";
+  }
+}
+
+static void MotorTest_Print(const char *phase, MotorId wheel)
+{
+  char buffer[128];
+  int length;
+
+  length = snprintf(buffer, sizeof(buffer),
+                    "TEST=%s,%s;CNT=%lu,%lu,%lu,%lu;HALL=%u,%u,%u,%u\r\n",
+                    phase, MotorTest_Name(wheel),
+                    (unsigned long)Encoder_GetCount(MOTOR_LF),
+                    (unsigned long)Encoder_GetCount(MOTOR_RF),
+                    (unsigned long)Encoder_GetCount(MOTOR_LR),
+                    (unsigned long)Encoder_GetCount(MOTOR_RR),
+                    (unsigned int)Hall_ReadLevel(MOTOR_LF),
+                    (unsigned int)Hall_ReadLevel(MOTOR_RF),
+                    (unsigned int)Hall_ReadLevel(MOTOR_LR),
+                    (unsigned int)Hall_ReadLevel(MOTOR_RR));
+  if (length > 0)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+  }
+}
+
+static void MotorTest_Run(void)
+{
+  MotorId wheel;
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR TEST BEGIN\r\n", 18U, HAL_MAX_DELAY);
+  Motor_StopAll();
+  HAL_Delay(MOTOR_TEST_GAP_MS);
+
+  for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+  {
+    MotorTest_Print("FWD_START", wheel);
+    Motor_SetDuty(wheel, MOTOR_TEST_DUTY);
+    HAL_Delay(MOTOR_TEST_MS);
+    Motor_StopAll();
+    MotorTest_Print("FWD_STOP", wheel);
+    HAL_Delay(MOTOR_TEST_GAP_MS);
+
+    MotorTest_Print("REV_START", wheel);
+    Motor_SetDuty(wheel, -MOTOR_TEST_DUTY);
+    HAL_Delay(MOTOR_TEST_MS);
+    Motor_StopAll();
+    MotorTest_Print("REV_STOP", wheel);
+    HAL_Delay(MOTOR_TEST_GAP_MS);
+  }
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR TEST END\r\n", 16U, HAL_MAX_DELAY);
+}
+
+static uint8_t Hall_ReadLevel(MotorId wheel)
+{
+  switch (wheel)
+  {
+    case MOTOR_LF:
+      return LL_GPIO_IsInputPinSet(HALL_FL_GPIO_Port, HALL_FL_Pin) ? 1U : 0U;
+
+    case MOTOR_RF:
+      return LL_GPIO_IsInputPinSet(HALL_FR_GPIO_Port, HALL_FR_Pin) ? 1U : 0U;
+
+    case MOTOR_LR:
+      return LL_GPIO_IsInputPinSet(HALL_RL_GPIO_Port, HALL_RL_Pin) ? 1U : 0U;
+
+    case MOTOR_RR:
+      return LL_GPIO_IsInputPinSet(HALL_RR_GPIO_Port, HALL_RR_Pin) ? 1U : 0U;
+
+    case MOTOR_COUNT:
+    default:
+      return 0U;
+  }
+}
 
 /* USER CODE END 4 */
 
