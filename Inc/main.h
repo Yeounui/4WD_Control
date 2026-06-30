@@ -90,9 +90,9 @@ void Error_Handler(void);
 #define HALL_FR_Pin LL_GPIO_PIN_1
 #define HALL_FR_GPIO_Port GPIOB
 #define HALL_FR_EXTI_IRQn EXTI1_IRQn
-#define HALL_RL_Pin LL_GPIO_PIN_2
+#define HALL_RL_Pin LL_GPIO_PIN_7
 #define HALL_RL_GPIO_Port GPIOB
-#define HALL_RL_EXTI_IRQn EXTI2_IRQn
+#define HALL_RL_EXTI_IRQn EXTI9_5_IRQn
 #define VL53_XSHUT_RIGHT_Pin LL_GPIO_PIN_8
 #define VL53_XSHUT_RIGHT_GPIO_Port GPIOA
 #define TMS_Pin LL_GPIO_PIN_13

@@ -867,7 +867,7 @@ static void MX_GPIO_Init(void)
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE1);
 
   /**/
-  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE2);
+  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE7);
 
   /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_4;
@@ -898,7 +898,7 @@ static void MX_GPIO_Init(void)
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
-  EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_2;
+  EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_7;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
   EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
@@ -939,8 +939,7 @@ static void MX_GPIO_Init(void)
   NVIC_EnableIRQ(EXTI0_IRQn);
   NVIC_SetPriority(EXTI1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI1_IRQn);
-  NVIC_SetPriority(EXTI2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
-  NVIC_EnableIRQ(EXTI2_IRQn);
+  /* EXTI2_IRQn removed: HALL_RL moved from PB2 to PB7 (EXTI9_5 below) */
   NVIC_SetPriority(EXTI4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI4_IRQn);
   NVIC_SetPriority(EXTI9_5_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
