@@ -14,6 +14,8 @@ typedef enum
 typedef struct
 {
   uint16_t distance_mm;
+  uint16_t raw_distance_mm;
+  uint8_t range_status;
   uint8_t ready;
   uint8_t obstacle;
   uint8_t present;

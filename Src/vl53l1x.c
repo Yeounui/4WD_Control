@@ -138,6 +138,8 @@ uint8_t TOF_Init_All(void)
   for (sensor = TOF_FRONT; sensor < TOF_COUNT; sensor++)
   {
     tof_sample[sensor].distance_mm = 0U;
+    tof_sample[sensor].raw_distance_mm = 0U;
+    tof_sample[sensor].range_status = 0U;
     tof_sample[sensor].ready = 0U;
     tof_sample[sensor].obstacle = 0U;
     tof_sample[sensor].present = 0U;
@@ -171,21 +173,26 @@ uint8_t TOF_ReadDistance_mm(TOF_Sensor sensor, uint16_t *distance_mm)
 
   if (VL53L1_GetMeasurementDataReady(&tof_dev[sensor], &ready) != VL53L1_ERROR_NONE)
   {
+    tof_sample[sensor].range_status = 0xFEU;
     tof_sample[sensor].ready = 0U;
     return 1U;
   }
   if (ready == 0U)
   {
+    tof_sample[sensor].range_status = 0xFDU;
     tof_sample[sensor].ready = 0U;
     return 1U;
   }
   if (VL53L1_GetRangingMeasurementData(&tof_dev[sensor], &data) != VL53L1_ERROR_NONE)
   {
+    tof_sample[sensor].range_status = 0xFCU;
     tof_sample[sensor].ready = 0U;
     return 1U;
   }
   (void)VL53L1_ClearInterruptAndStartMeasurement(&tof_dev[sensor]);
 
+  tof_sample[sensor].raw_distance_mm = (data.RangeMilliMeter > 0) ? (uint16_t)data.RangeMilliMeter : 0U;
+  tof_sample[sensor].range_status = data.RangeStatus;
   if ((data.RangeStatus != 0U) || (data.RangeMilliMeter <= 0))
   {
     tof_sample[sensor].ready = 0U;
@@ -243,7 +250,7 @@ uint8_t TOF_IsObstacle(void)
 
 TOF_Sample TOF_GetSample(TOF_Sensor sensor)
 {
-  TOF_Sample empty = {0U, 0U, 0U, 0U};
+  TOF_Sample empty = {0U, 0U, 0U, 0U, 0U, 0U};
 
   if (sensor >= TOF_COUNT)
   {

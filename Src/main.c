@@ -43,6 +43,7 @@
 #define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
+#define MOTOR_TEST_ON_BOOT 0U
 #define MOTOR_TEST_DUTY   2000
 #define MOTOR_TEST_MS     1000U
 #define MOTOR_TEST_GAP_MS 500U
@@ -216,7 +217,14 @@ int main(void)
   last_tof_tick = last_tick;
   last_stream_tick = last_tick;
   last_lcd_tick = last_tick;
-  MotorTest_Run();
+  if (MOTOR_TEST_ON_BOOT != 0U)
+  {
+    MotorTest_Run();
+  }
+  else
+  {
+    Motor_StopAll();
+  }
 
   /* USER CODE END 2 */
 
@@ -385,7 +393,7 @@ int main(void)
     {
       char buffer[32];
       char spdbuf[160];
-      char tofbuf[64];
+      char tofbuf[160];
       int length;
       int speed_length;
       int tof_length;
@@ -428,16 +436,40 @@ int main(void)
         TOF_Sample tof_front;
         TOF_Sample tof_left;
         TOF_Sample tof_right;
+        uint8_t tof_ack_default;
+        uint8_t tof_ack_front;
+        uint8_t tof_ack_left;
+        uint8_t tof_ack_right;
 
         tof_front = TOF_GetSample(TOF_FRONT);
         tof_left = TOF_GetSample(TOF_LEFT);
         tof_right = TOF_GetSample(TOF_RIGHT);
+        tof_ack_default = (SoftI2C_IsDeviceReady(0x52U) == 0U) ? 1U : 0U;
+        tof_ack_front = (SoftI2C_IsDeviceReady(0x54U) == 0U) ? 1U : 0U;
+        tof_ack_left = (SoftI2C_IsDeviceReady(0x56U) == 0U) ? 1U : 0U;
+        tof_ack_right = (SoftI2C_IsDeviceReady(0x58U) == 0U) ? 1U : 0U;
         tof_length = snprintf(tofbuf, sizeof(tofbuf),
-                              "TOF=%u,%u,%u;OBS=%u\r\n",
+                              "TOF=%u,%u,%u;OBS=%u;RDY=%u,%u,%u;PRES=%u,%u,%u;STAT=%u,%u,%u;RAW=%u,%u,%u;ACK=%u,%u,%u,%u\r\n",
                               (unsigned int)tof_front.distance_mm,
                               (unsigned int)tof_left.distance_mm,
                               (unsigned int)tof_right.distance_mm,
-                              (unsigned int)TOF_IsObstacle());
+                              (unsigned int)TOF_IsObstacle(),
+                              (unsigned int)tof_front.ready,
+                              (unsigned int)tof_left.ready,
+                              (unsigned int)tof_right.ready,
+                              (unsigned int)tof_front.present,
+                              (unsigned int)tof_left.present,
+                              (unsigned int)tof_right.present,
+                              (unsigned int)tof_front.range_status,
+                              (unsigned int)tof_left.range_status,
+                              (unsigned int)tof_right.range_status,
+                              (unsigned int)tof_front.raw_distance_mm,
+                              (unsigned int)tof_left.raw_distance_mm,
+                              (unsigned int)tof_right.raw_distance_mm,
+                              (unsigned int)tof_ack_default,
+                              (unsigned int)tof_ack_front,
+                              (unsigned int)tof_ack_left,
+                              (unsigned int)tof_ack_right);
         if (tof_length > 0)
         {
           HAL_UART_Transmit(&huart2, (uint8_t *)tofbuf, (uint16_t)tof_length, HAL_MAX_DELAY);

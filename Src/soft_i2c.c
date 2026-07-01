@@ -4,9 +4,9 @@
 
 #define SOFT_I2C_PORT GPIOB
 #define SOFT_I2C_SCL  GPIO_PIN_6
-#define SOFT_I2C_SDA  GPIO_PIN_7
+#define SOFT_I2C_SDA  GPIO_PIN_11
 #define SOFT_I2C_SCL_SHIFT 24U
-#define SOFT_I2C_SDA_SHIFT 28U
+#define SOFT_I2C_SDA_SHIFT 12U
 #define SOFT_I2C_CRL_MASK  0x0FU
 #define SOFT_I2C_OUTPUT_PP 0x03U
 #define SOFT_I2C_INPUT_FL  0x04U
@@ -39,7 +39,7 @@ static void scl_release(void)
 static void sda_low(void)
 {
   SOFT_I2C_PORT->BRR = SOFT_I2C_SDA;
-  MODIFY_REG(SOFT_I2C_PORT->CRL,
+  MODIFY_REG(SOFT_I2C_PORT->CRH,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SDA_SHIFT,
              SOFT_I2C_OUTPUT_PP << SOFT_I2C_SDA_SHIFT);
 }
@@ -47,7 +47,7 @@ static void sda_low(void)
 static void sda_release(void)
 {
   SOFT_I2C_PORT->BRR = SOFT_I2C_SDA;
-  MODIFY_REG(SOFT_I2C_PORT->CRL,
+  MODIFY_REG(SOFT_I2C_PORT->CRH,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SDA_SHIFT,
              SOFT_I2C_INPUT_FL << SOFT_I2C_SDA_SHIFT);
 }
