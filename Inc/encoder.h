@@ -3,10 +3,15 @@
 
 #include "motor.h"
 
-/* PLACEHOLDER — set to the real per-wheel count per revolution
- * (Hall magnets x 2 because both edges are counted). USER must tune to hardware.
+/* One rising Hall edge is one wheel revolution. Pulses faster than this floor
+ * imply more than 3000 RPM and are treated as bounce/noise.
  */
-#define ENCODER_COUNTS_PER_REV 20.0f
+#define ENCODER_DEBOUNCE_FLOOR_MS 20U
+
+/* With one magnet per wheel, speeds below about 30 RPM are reported as stopped
+ * to avoid latching a stale period after the wheel stops.
+ */
+#define ENCODER_STALL_TIMEOUT_MS 2000U
 
 void Encoder_Init(void);
 void Encoder_OnPulse(MotorId wheel);
