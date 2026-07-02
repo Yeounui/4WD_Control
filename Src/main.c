@@ -43,14 +43,26 @@
 #define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
-#define MOTOR_TEST_ON_BOOT 0U
+#define MOTOR_TEST_ON_BOOT 1U
 #define MOTOR_TEST_DUTY   2000
 #define MOTOR_TEST_MS     1000U
 #define MOTOR_TEST_GAP_MS 500U
+#define MOTOR_SWEEP_ON_BOOT 0U
+#define MOTOR_SWEEP_MIN_DUTY 800
+#define MOTOR_SWEEP_MAX_DUTY 3199
+#define MOTOR_SWEEP_STEP  200
+#define MOTOR_SWEEP_HOLD_MS 1500U
+#define MOTOR_SWEEP_GAP_MS 500U
+#define SPEED_DUTY_MAX    3199.0f
+#define SPEED_TRIM_MAX_DUTY 800.0f
 /* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
 #define SPEED_KP          5.0f
 #define SPEED_KI          0.0f
 #define SPEED_KD          0.0f
+
+#if (MOTOR_TEST_ON_BOOT != 0U) && (MOTOR_SWEEP_ON_BOOT != 0U)
+#error "MOTOR_TEST_ON_BOOT and MOTOR_SWEEP_ON_BOOT are mutually exclusive."
+#endif
 
 /* USER CODE END Includes */
 
@@ -84,6 +96,9 @@ DMA_HandleTypeDef hdma_usart2_rx;
 /* USER CODE BEGIN PV */
 volatile uint8_t g_param_save_request = 0U;
 static PID pid_speed[MOTOR_COUNT];
+/* PLACEHOLDER duty/RPM feedforward coefficients; fill from MOTOR_SWEEP_ON_BOOT data. */
+static const float speed_ff_gain[MOTOR_COUNT] = {20.0f, 20.0f, 20.0f, 20.0f};
+static const float speed_ff_offset[MOTOR_COUNT] = {800.0f, 800.0f, 800.0f, 800.0f};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -99,7 +114,9 @@ static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 static uint8_t Hall_ReadLevel(MotorId wheel);
 static void MotorTest_Run(void);
+static void MotorSweep_Run(void);
 static const char *MotorTest_Name(MotorId wheel);
+static int16_t SpeedFF_Duty(MotorId wheel, float setpoint_rpm);
 
 /* USER CODE END PFP */
 
@@ -204,7 +221,8 @@ int main(void)
 
   for (MotorId w = MOTOR_LF; w < MOTOR_COUNT; w++)
   {
-    PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD, -3599.0f, 3599.0f);
+    PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD,
+             -SPEED_TRIM_MAX_DUTY, SPEED_TRIM_MAX_DUTY);
   }
 
   stat_count = 0U;
@@ -217,7 +235,11 @@ int main(void)
   last_tof_tick = last_tick;
   last_stream_tick = last_tick;
   last_lcd_tick = last_tick;
-  if (MOTOR_TEST_ON_BOOT != 0U)
+  if (MOTOR_SWEEP_ON_BOOT != 0U)
+  {
+    MotorSweep_Run();
+  }
+  else if (MOTOR_TEST_ON_BOOT != 0U)
   {
     MotorTest_Run();
   }
@@ -276,12 +298,14 @@ int main(void)
       Encoder_Sample(speed_dt);
       for (w = MOTOR_LF; w < MOTOR_COUNT; w++)
       {
+        float duty;
         float measured;
-        float out;
+        float trim;
         float setpoint;
         uint32_t primask;
         uint8_t output_valid;
 
+        duty = 0.0f;
         setpoint = 0.0f;
         output_valid = 0U;
         if (FSM_IsMotionEnabled() != 0U)
@@ -292,13 +316,14 @@ int main(void)
           {
             measured = -measured;
           }
-          out = PID_Update(&pid_speed[w], setpoint, measured, speed_dt);
+          trim = PID_Update(&pid_speed[w], setpoint, measured, speed_dt);
+          duty = (float)SpeedFF_Duty(w, setpoint) + trim;
           output_valid = 1U;
         }
         else
         {
           PID_Reset(&pid_speed[w]);
-          out = 0.0f;
+          trim = 0.0f;
         }
 
         primask = __get_PRIMASK();
@@ -316,7 +341,7 @@ int main(void)
         }
         else
         {
-          Motor_SetDuty(w, (int16_t)out);
+          Motor_SetDuty(w, (int16_t)duty);
         }
         if (primask == 0U)
         {
@@ -1005,6 +1030,29 @@ static const char *MotorTest_Name(MotorId wheel)
   }
 }
 
+static int16_t SpeedFF_Duty(MotorId wheel, float setpoint_rpm)
+{
+  float magnitude;
+
+  if ((wheel >= MOTOR_COUNT) || (setpoint_rpm == 0.0f))
+  {
+    return 0;
+  }
+
+  magnitude = speed_ff_offset[wheel] + (speed_ff_gain[wheel] * fabsf(setpoint_rpm));
+  if (magnitude > SPEED_DUTY_MAX)
+  {
+    magnitude = SPEED_DUTY_MAX;
+  }
+
+  if (setpoint_rpm < 0.0f)
+  {
+    return (int16_t)(-magnitude);
+  }
+
+  return (int16_t)magnitude;
+}
+
 static void MotorTest_Print(const char *phase, MotorId wheel)
 {
   char buffer[128];
@@ -1053,6 +1101,66 @@ static void MotorTest_Run(void)
   }
 
   HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR TEST END\r\n", 16U, HAL_MAX_DELAY);
+}
+
+static void MotorSweep_Run(void)
+{
+  MotorId wheel;
+  float hold_dt;
+
+  hold_dt = (float)MOTOR_SWEEP_HOLD_MS / 1000.0f;
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR SWEEP BEGIN\r\n", 19U, HAL_MAX_DELAY);
+  Motor_StopAll();
+  HAL_Delay(MOTOR_SWEEP_GAP_MS);
+
+  for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+  {
+    int16_t duty;
+    char buffer[96];
+    int length;
+
+    length = snprintf(buffer, sizeof(buffer), "SWEEP_WHEEL=%s\r\n", MotorTest_Name(wheel));
+    if (length > 0)
+    {
+      HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+    }
+
+    for (duty = MOTOR_SWEEP_MIN_DUTY; duty <= MOTOR_SWEEP_MAX_DUTY; )
+    {
+      float rpm;
+      int32_t rpm_x1000;
+
+      Motor_SetDuty(wheel, duty);
+      HAL_Delay(MOTOR_SWEEP_HOLD_MS);
+      Encoder_Sample(hold_dt);
+      rpm = Encoder_GetSpeed(wheel);
+      rpm_x1000 = (int32_t)(rpm * 1000.0f);
+      length = snprintf(buffer, sizeof(buffer), "SWEEP=%s,%d,%ld\r\n",
+                        MotorTest_Name(wheel), (int)duty, (long)rpm_x1000);
+      if (length > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+      }
+
+      Motor_StopAll();
+      HAL_Delay(MOTOR_SWEEP_GAP_MS);
+
+      if (duty == MOTOR_SWEEP_MAX_DUTY)
+      {
+        break;
+      }
+      if ((MOTOR_SWEEP_MAX_DUTY - duty) <= MOTOR_SWEEP_STEP)
+      {
+        duty = MOTOR_SWEEP_MAX_DUTY;
+      }
+      else
+      {
+        duty = (int16_t)(duty + MOTOR_SWEEP_STEP);
+      }
+    }
+  }
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR SWEEP END\r\n", 17U, HAL_MAX_DELAY);
 }
 
 static uint8_t Hall_ReadLevel(MotorId wheel)

@@ -25,8 +25,11 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 3** — 500 stationary samples collected over USART2; variance recorded as
   `R`; yaw stream stable. Kalman drift metric measured.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
-  complete (commits c92e8ea/9464ac5/813ed5c/4eda73e); HW gain/COUNTS tuning and
-  < 5% measurement still pending._
+  complete (commits c92e8ea/9464ac5/813ed5c/4eda73e; encoder reimplemented as
+  period-based RPM, single magnet/wheel, in c3236b3). A duty↔RPM feedforward
+  plus narrow-range trim-PID was added on top (uncommitted; see [[REVIEW]]
+  §Phase 4 Feedforward Calibration). HW duty-sweep calibration, feedforward
+  coefficient fit, and the < 5% measurement are still pending._
 - **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Code
   complete (commit 8e4f2ef); yaw gains, turn angle, ramp limits, and correction
   sign remain unverified on hardware._
@@ -76,6 +79,36 @@ Gains are compile-time (no runtime gain command); each iteration is a reflash.
 The P-only loop (`Kp=5, Ki=0`) runs on the same coarse per-tick RPM and is
 expected to jitter/steady-state-droop — tune around it (add `Ki`) rather than
 treating the jitter as a defect.
+
+## Phase 4 Feedforward Calibration — duty↔RPM sweep
+
+To remove the structural steady-state droop of the pure-P speed loop above,
+`main.c`'s speed loop now computes `duty = SpeedFF_Duty(setpoint) + PID_trim`:
+a per-wheel linear feedforward `offset + gain·|RPM|` (`speed_ff_offset[]`,
+`speed_ff_gain[]`, currently placeholder `800.0f`/`20.0f` for all four wheels)
+supplies most of the duty, and `pid_speed` (now clamped to a narrow **±800**
+trim range, was ±3599) only corrects the residual error.
+
+**Calibration procedure (compile-time flags, reflash per run):**
+1. Set `MOTOR_TEST_ON_BOOT` to `0U` and `MOTOR_SWEEP_ON_BOOT` to `1U` in
+   `main.c` (the two are mutually exclusive — a `#error` enforces this),
+   rebuild, reflash.
+2. On boot, `MotorSweep_Run` drives each wheel forward-only from
+   `MOTOR_SWEEP_MIN_DUTY` (800) to `MOTOR_SWEEP_MAX_DUTY` (3199) in
+   `MOTOR_SWEEP_STEP` (200) increments, holding each duty for
+   `MOTOR_SWEEP_HOLD_MS` (1500 ms) before sampling `Encoder_GetSpeed`, and
+   streams over USART2: `SWEEP_WHEEL=<name>` then
+   `SWEEP=<name>,<duty>,<rpm×1000>` per step.
+3. Per wheel, fit `RPM ≈ (duty − offset) / gain` (linear regression on the
+   captured `SWEEP=` points) and replace the placeholder `speed_ff_gain[]`/
+   `speed_ff_offset[]` values in `main.c` with the fitted per-wheel results.
+4. Revert `MOTOR_SWEEP_ON_BOOT` to `0U`, reflash, and re-run the Phase 4 bench
+   tuning procedure above to confirm the < 5% speed-tracking target with the
+   tuned feedforward + trim.
+
+Status: code added and host-build-verified (`cmake --build build/Debug`, no
+warnings); the sweep has not been run on hardware yet, and
+`speed_ff_gain[]`/`speed_ff_offset[]` remain unfit placeholders.
 
 ## Data Collection
 

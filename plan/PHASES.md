@@ -71,8 +71,11 @@ proceeds through CubeMX boilerplate → code → verify.
   RR→PA4; record magnets/rev ([[USER]] §Phase 4).
 - **CubeMX:** EXTI0, EXTI1, EXTI2, EXTI4 with pull-ups and both-edge triggers;
   generate `MX_GPIO_Init` and the EXTI IRQ path with LL.
-- **Code:** `encoder.{h,c}` (`Encoder_Update` in LL ISR, `Encoder_GetSpeed`),
-  `pid.{h,c}` with `pid_speed` ×4 in the control tick.
+- **Code:** `encoder.{h,c}` (period-based RPM, single magnet/wheel:
+  `Encoder_OnPulse` EXTI ISR measures pulse period, `Encoder_Sample`/
+  `Encoder_GetSpeed` derive RPM), `pid.{h,c}` with `pid_speed` ×4 used as a
+  narrow duty **trim** on top of a per-wheel duty→RPM feedforward
+  (`SpeedFF_Duty` in `main.c`; see [[REVIEW]] §Phase 4 Feedforward Calibration).
 - **Verify:** RPM/speed read per wheel; per-wheel speed tracking error
   ([[REVIEW]]).
 

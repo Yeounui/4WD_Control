@@ -271,3 +271,34 @@ existing turn constants, then drives forward briefly and returns to STRAIGHT.
 Build verification passed with `cmake --build build/Debug --clean-first`; linked
 RAM use is 6152 B / 20 KB (30.04%) and FLASH use is 60004 B / 128 KB (45.78%).
 Hardware ranging and obstacle-threshold tuning are still pending.
+
+## D15 — Phase 4 speed loop adds a duty↔RPM feedforward plus narrow trim-PID, and a duty-sweep calibration mode
+
+**Implemented 2026-07-02 (uncommitted).** The pure-P speed loop (`SPEED_KP=5`,
+`SPEED_KI=0`) had a structural steady-state droop: with no integral term, a
+nonzero duty is required to sustain any nonzero RPM, so proportional error never
+fully closes. Rather than adding `Ki` alone, `main.c` now separates the duty
+command into two parts: a per-wheel linear feedforward
+`SpeedFF_Duty(wheel, setpoint_rpm) = offset[wheel] + gain[wheel] * |setpoint_rpm|`
+(sign restored from `setpoint_rpm`) that supplies the bulk of the duty from the
+motor's own duty/RPM characteristic, plus `pid_speed` narrowed to a small
+**±800** trim range (was ±3599) that only corrects the residual error between
+the feedforward estimate and measured RPM. Final duty = feedforward + trim,
+clamped by `Motor_SetDuty`'s existing `MOTOR_MAX_DUTY` clamp.
+
+`speed_ff_gain[MOTOR_COUNT]` and `speed_ff_offset[MOTOR_COUNT]` are placeholders
+(`20.0f`/`800.0f` for all four wheels, matching the `ENCODER_COUNTS_PER_REV`-style
+placeholder pattern) and must be replaced with per-wheel hardware-fit values
+before the Phase 4 < 5% target is meaningful.
+
+To derive those coefficients, a new `MotorSweep_Run` boot-time mode
+(`MOTOR_SWEEP_ON_BOOT`, mutually exclusive with `MOTOR_TEST_ON_BOOT` via a
+compile-time `#error`) follows the existing `MotorTest_Run` convention: it drives
+each wheel forward-only through a duty sweep (`MOTOR_SWEEP_MIN_DUTY=800` to
+`MOTOR_SWEEP_MAX_DUTY=3199`, step `200`, holding `MOTOR_SWEEP_HOLD_MS=1500` ms per
+step) and streams `SWEEP_WHEEL=<name>` / `SWEEP=<name>,<duty>,<rpm×1000>` lines
+over USART2 for offline linear-fit ([[REVIEW]] §Phase 4 Feedforward Calibration).
+
+Build verification passed (`cmake --build build/Debug --clean-first`, no
+warnings). Hardware duty-sweep data collection and the resulting coefficient fit
+are still pending.
