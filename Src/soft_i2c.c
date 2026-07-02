@@ -2,7 +2,8 @@
 
 #include "stm32f1xx_hal.h"
 
-#define SOFT_I2C_PORT GPIOB
+#define SOFT_I2C_SCL_PORT GPIOA
+#define SOFT_I2C_SDA_PORT GPIOB
 #define SOFT_I2C_SCL  GPIO_PIN_6
 #define SOFT_I2C_SDA  GPIO_PIN_11
 #define SOFT_I2C_SCL_SHIFT 24U
@@ -22,39 +23,39 @@ static void delay_half_period(void)
 
 static void scl_low(void)
 {
-  SOFT_I2C_PORT->BRR = SOFT_I2C_SCL;
-  MODIFY_REG(SOFT_I2C_PORT->CRL,
+  SOFT_I2C_SCL_PORT->BRR = SOFT_I2C_SCL;
+  MODIFY_REG(SOFT_I2C_SCL_PORT->CRL,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SCL_SHIFT,
              SOFT_I2C_OUTPUT_PP << SOFT_I2C_SCL_SHIFT);
 }
 
 static void scl_release(void)
 {
-  SOFT_I2C_PORT->BRR = SOFT_I2C_SCL;
-  MODIFY_REG(SOFT_I2C_PORT->CRL,
+  SOFT_I2C_SCL_PORT->BRR = SOFT_I2C_SCL;
+  MODIFY_REG(SOFT_I2C_SCL_PORT->CRL,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SCL_SHIFT,
              SOFT_I2C_INPUT_FL << SOFT_I2C_SCL_SHIFT);
 }
 
 static void sda_low(void)
 {
-  SOFT_I2C_PORT->BRR = SOFT_I2C_SDA;
-  MODIFY_REG(SOFT_I2C_PORT->CRH,
+  SOFT_I2C_SDA_PORT->BRR = SOFT_I2C_SDA;
+  MODIFY_REG(SOFT_I2C_SDA_PORT->CRH,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SDA_SHIFT,
              SOFT_I2C_OUTPUT_PP << SOFT_I2C_SDA_SHIFT);
 }
 
 static void sda_release(void)
 {
-  SOFT_I2C_PORT->BRR = SOFT_I2C_SDA;
-  MODIFY_REG(SOFT_I2C_PORT->CRH,
+  SOFT_I2C_SDA_PORT->BRR = SOFT_I2C_SDA;
+  MODIFY_REG(SOFT_I2C_SDA_PORT->CRH,
              SOFT_I2C_CRL_MASK << SOFT_I2C_SDA_SHIFT,
              SOFT_I2C_INPUT_FL << SOFT_I2C_SDA_SHIFT);
 }
 
 static uint8_t sda_read(void)
 {
-  return (HAL_GPIO_ReadPin(SOFT_I2C_PORT, SOFT_I2C_SDA) == GPIO_PIN_SET) ? 1U : 0U;
+  return (HAL_GPIO_ReadPin(SOFT_I2C_SDA_PORT, SOFT_I2C_SDA) == GPIO_PIN_SET) ? 1U : 0U;
 }
 
 static void start(void)
@@ -151,13 +152,20 @@ void SoftI2C_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
-  HAL_GPIO_WritePin(SOFT_I2C_PORT, SOFT_I2C_SCL | SOFT_I2C_SDA, GPIO_PIN_SET);
-  GPIO_InitStruct.Pin = SOFT_I2C_SCL | SOFT_I2C_SDA;
+  HAL_GPIO_WritePin(SOFT_I2C_SCL_PORT, SOFT_I2C_SCL, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = SOFT_I2C_SCL;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-  HAL_GPIO_Init(SOFT_I2C_PORT, &GPIO_InitStruct);
+  HAL_GPIO_Init(SOFT_I2C_SCL_PORT, &GPIO_InitStruct);
+
+  HAL_GPIO_WritePin(SOFT_I2C_SDA_PORT, SOFT_I2C_SDA, GPIO_PIN_SET);
+  GPIO_InitStruct.Pin = SOFT_I2C_SDA;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(SOFT_I2C_SDA_PORT, &GPIO_InitStruct);
 
   sda_release();
   scl_release();

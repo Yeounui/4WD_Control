@@ -43,7 +43,7 @@
 #define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
-#define MOTOR_TEST_ON_BOOT 1U
+#define MOTOR_TEST_ON_BOOT 0U
 #define MOTOR_TEST_DUTY   2000
 #define MOTOR_TEST_MS     1000U
 #define MOTOR_TEST_GAP_MS 500U
@@ -96,9 +96,9 @@ DMA_HandleTypeDef hdma_usart2_rx;
 /* USER CODE BEGIN PV */
 volatile uint8_t g_param_save_request = 0U;
 static PID pid_speed[MOTOR_COUNT];
-/* PLACEHOLDER duty/RPM feedforward coefficients; fill from MOTOR_SWEEP_ON_BOOT data. */
-static const float speed_ff_gain[MOTOR_COUNT] = {20.0f, 20.0f, 20.0f, 20.0f};
-static const float speed_ff_offset[MOTOR_COUNT] = {800.0f, 800.0f, 800.0f, 800.0f};
+/* duty/RPM feedforward coefficients measured via MOTOR_SWEEP_ON_BOOT (order: LF, RF, LR, RR). */
+static const float speed_ff_gain[MOTOR_COUNT] = {20.21f, 16.41f, 14.58f, 15.00f};
+static const float speed_ff_offset[MOTOR_COUNT] = {988.10f, 1308.95f, 1393.90f, 1353.18f};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -915,16 +915,13 @@ static void MX_GPIO_Init(void)
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTA, LL_GPIO_AF_EXTI_LINE4);
 
   /**/
-  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTA, LL_GPIO_AF_EXTI_LINE6);
+  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE6);
 
   /**/
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE0);
 
   /**/
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE1);
-
-  /**/
-  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE7);
 
   /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_4;
@@ -937,7 +934,7 @@ static void MX_GPIO_Init(void)
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_6;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
@@ -955,17 +952,7 @@ static void MX_GPIO_Init(void)
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
-  EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_7;
-  EXTI_InitStruct.LineCommand = ENABLE;
-  EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
-  LL_EXTI_Init(&EXTI_InitStruct);
-
-  /**/
   LL_GPIO_SetPinPull(HALL_RR_GPIO_Port, HALL_RR_Pin, LL_GPIO_PULL_UP);
-
-  /**/
-  LL_GPIO_SetPinPull(SHOCK_GPIO_Port, SHOCK_Pin, LL_GPIO_PULL_UP);
 
   /**/
   LL_GPIO_SetPinPull(HALL_FL_GPIO_Port, HALL_FL_Pin, LL_GPIO_PULL_UP);
@@ -978,9 +965,6 @@ static void MX_GPIO_Init(void)
 
   /**/
   LL_GPIO_SetPinMode(HALL_RR_GPIO_Port, HALL_RR_Pin, LL_GPIO_MODE_INPUT);
-
-  /**/
-  LL_GPIO_SetPinMode(SHOCK_GPIO_Port, SHOCK_Pin, LL_GPIO_MODE_INPUT);
 
   /**/
   LL_GPIO_SetPinMode(HALL_FL_GPIO_Port, HALL_FL_Pin, LL_GPIO_MODE_INPUT);
@@ -996,7 +980,7 @@ static void MX_GPIO_Init(void)
   NVIC_EnableIRQ(EXTI0_IRQn);
   NVIC_SetPriority(EXTI1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI1_IRQn);
-  /* EXTI2_IRQn removed: HALL_RL moved from PB2 to PB7 (EXTI9_5 below) */
+  /* EXTI2_IRQn removed: HALL_RL moved from PB2 to PB6 (EXTI9_5 below) */
   NVIC_SetPriority(EXTI4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI4_IRQn);
   NVIC_SetPriority(EXTI9_5_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));

@@ -144,6 +144,10 @@ PA1/PA7/PA8 for Front/Left/Right VL53L1X XSHUT. These pins are exposed on the
 NUCLEO-F103RB Arduino or ST morpho headers, avoid the motor, UART, I2C, ADC, and
 SWD assignments, and leave PA5 free from conflict with the on-board LED.
 
+**Superseded in part by [[D16]] (2026-07-02):** the shock sensor was never
+installed on the hardware and its PA6 assignment was removed; PA6 now hosts
+soft-I2C SCL instead.
+
 ## D9 — Use HSI-derived 64 MHz clock; retune PWM periods
 
 **Decided and verified 2026-06-26:** the board setup has no HSE source available,
@@ -155,7 +159,7 @@ driver clamps signed duty to 3199. Build and ST-Link flash verification passed,
 and the UART one-shot motor test emitted the expected sequence before user
 observation confirmed all four motors move forward and reverse correctly.
 
-## D10 — Drop hardware I2C1; bit-bang software I2C on PB6/PB7
+## D10 — Drop hardware I2C1; bit-bang software I2C, now on PA6 (SCL) / PB11 (SDA)
 
 **Root cause found 2026-06-26 (hardware-confirmed):** RF-reverse PWM (PB5 =
 TIM3_CH2) was stuck HIGH — the right-front motor only spun in reverse. The cause
@@ -169,14 +173,22 @@ peripheral's secondary signal can steal a pin.")
 
 **Decision:** keep all four motors on their current pins (RF stays PB4/PB5) and
 **drop the hardware I2C1 peripheral entirely**, replacing it with a **software
-bit-bang I2C master** on the existing device pins **SCL = PB6, SDA = PB7**
+bit-bang I2C master**, originally on device pins **SCL = PB6, SDA = PB7**
 (open-drain, external pull-ups). Rationale — every hardware I2C placement collides
 on this stack: I2C1 default PB6/PB7 drags SMBA onto PB5; I2C1 remap PB8/PB9 = RR
 motor (TIM4_CH3/CH4); I2C2 PB10/PB11 = LR-reverse (TIM2_CH3). Software I2C avoids
 all of them with no motor pin moves and serves the shared bus (MPU-6050 now; LCD,
 VL53L1X ×3 later). Cost: `mpu6050.c` and `lcd.c` call a `soft_i2c` module instead
-of `HAL_I2C_*`. **Status: implemented; pending hardware re-verification of RF
-reverse + IMU/LCD on the soft bus.**
+of `HAL_I2C_*`.
+
+**Pin history (superseded by [[D16]]):** SDA moved PB7 → PB11 so HALL_RL could use
+PB7; when HALL_RL was later found to be physically wired to PB6 instead, SCL was
+moved PB6 → PA6 (freed by the SHOCK-sensor removal) to avoid colliding with
+HALL_RL's EXTI6 line. Current pins: **SCL = PA6, SDA = PB11**. WHO_AM_I=0x68
+(MPU-6050) and TOF reads confirmed working on the current PA6/PB11 pin pair after
+the D16 remap.
+
+**Status**: verified
 
 ## D11 — Source correction: encoder API/units; Phase 4 speed telemetry added
 
@@ -253,8 +265,8 @@ tuning placeholders. Build verification passed with `cmake --build build/Debug
 `STSW-IMG007` package contains the official VL53L1X API. The needed core and
 platform headers/sources were copied into `Drivers/VL53L1X/`; the Windows/Ranging
 Sensor board `platform.c` was replaced with a project-local STM32 platform shim
-that routes the ST API's 16-bit register reads/writes through `soft_i2c` on
-PB6/PB7. Hardware I2C remains disabled per D10.
+that routes the ST API's 16-bit register reads/writes through `soft_i2c` (see
+[[D10]] for current pins; originally PB6/PB7). Hardware I2C remains disabled per D10.
 
 Phase 8 adds `vl53l1x.{h,c}` as a wrapper around the ST API. `TOF_Init_All` uses
 XSHUT to boot Front/Left/Right one at a time, assigns 8-bit I2C addresses
@@ -274,7 +286,7 @@ Hardware ranging and obstacle-threshold tuning are still pending.
 
 ## D15 — Phase 4 speed loop adds a duty↔RPM feedforward plus narrow trim-PID, and a duty-sweep calibration mode
 
-**Implemented 2026-07-02 (uncommitted).** The pure-P speed loop (`SPEED_KP=5`,
+**Implemented 2026-07-02.** The pure-P speed loop (`SPEED_KP=5`,
 `SPEED_KI=0`) had a structural steady-state droop: with no integral term, a
 nonzero duty is required to sustain any nonzero RPM, so proportional error never
 fully closes. Rather than adding `Ki` alone, `main.c` now separates the duty
@@ -286,12 +298,7 @@ motor's own duty/RPM characteristic, plus `pid_speed` narrowed to a small
 the feedforward estimate and measured RPM. Final duty = feedforward + trim,
 clamped by `Motor_SetDuty`'s existing `MOTOR_MAX_DUTY` clamp.
 
-`speed_ff_gain[MOTOR_COUNT]` and `speed_ff_offset[MOTOR_COUNT]` are placeholders
-(`20.0f`/`800.0f` for all four wheels, matching the `ENCODER_COUNTS_PER_REV`-style
-placeholder pattern) and must be replaced with per-wheel hardware-fit values
-before the Phase 4 < 5% target is meaningful.
-
-To derive those coefficients, a new `MotorSweep_Run` boot-time mode
+To derive the feedforward coefficients, a `MotorSweep_Run` boot-time mode
 (`MOTOR_SWEEP_ON_BOOT`, mutually exclusive with `MOTOR_TEST_ON_BOOT` via a
 compile-time `#error`) follows the existing `MotorTest_Run` convention: it drives
 each wheel forward-only through a duty sweep (`MOTOR_SWEEP_MIN_DUTY=800` to
@@ -300,5 +307,51 @@ step) and streams `SWEEP_WHEEL=<name>` / `SWEEP=<name>,<duty>,<rpm×1000>` lines
 over USART2 for offline linear-fit ([[REVIEW]] §Phase 4 Feedforward Calibration).
 
 Build verification passed (`cmake --build build/Debug --clean-first`, no
-warnings). Hardware duty-sweep data collection and the resulting coefficient fit
-are still pending.
+warnings). **Hardware duty-sweep run 2026-07-02** (post-[[D16]] HALL_RL/PB6 fix,
+two concordant sweep runs, outlier points >5x median RPM dropped before fitting):
+final coefficients applied to `main.c` — LF gain=20.21 offset=988.10, RF
+gain=16.41 offset=1308.95, LR gain=14.58 offset=1393.90, RR gain=15.00
+offset=1353.18 (order matches `MOTOR_LF..MOTOR_RR`). LF's higher gain vs. the
+other three wheels was consistent across both runs and is treated as a genuine
+per-wheel mechanical difference, not noise. `MOTOR_SWEEP_ON_BOOT` reverted to
+`0U` and reflashed. Phase 4 <5% speed-tracking re-verification with the tuned
+feedforward is still pending.
+
+## D16 — Remove SHOCK sensor (never installed); move HALL_RL to its actual wiring on PB6; move soft-I2C SCL off PB6
+
+**Decision (2026-07-02):** the SHOCK sensor (PA6, EXTI line 6) is not being
+installed on the hardware — user confirmed "쇼크는 우리 안달기로 했어". All SHOCK
+code was removed: `SHOCK_Pin`/`SHOCK_GPIO_Port`/`SHOCK_EXTI_IRQn` deleted from
+`main.h`; the EXTI6 `AF_SetEXTISource`/`EXTI_InitStruct`/pull-up/mode setup for
+PA6 removed from `main.c`; the shock branch of `EXTI9_5_IRQHandler` (which called
+`FSM_RequestEmergencyFromISR`) removed from `stm32f1xx_it.c`; `FSM_ResetEmergency`
+in `fsm.c` simplified to unconditionally clear the emergency latch instead of
+re-checking the shock pin/EXTI6 flag. `FSM_RequestEmergencyFromISR` itself is kept
+(unreferenced) as a reusable ISR-safe emergency-trigger API for future sensors.
+The `.ioc` file's SHOCK GPIO block was removed to keep future CubeMX
+regeneration consistent.
+
+**Root cause this unblocked:** HALL_RL (rear-left wheel hall sensor) read 0 RPM
+across 6 sweep runs despite firmware config matching the other 3 wheels
+byte-for-byte. Direct hardware testing (LED-lit check) showed the sensor is
+physically wired to **PB6**, not PB7 as the firmware expected — PB7 had no power
+at all. PB6 and PA6 (SHOCK) share EXTI line 6 (STM32 EXTI lines are shared by pin
+*number* across ports, one port selectable per line via AFIO_EXTICR), so SHOCK
+had to be removed before HALL_RL could use PB6. `HALL_RL_Pin` in `main.h` changed
+`LL_GPIO_PIN_7` → `LL_GPIO_PIN_6`; EXTI line 6 source changed `PORTA` → `PORTB`
+and trigger changed `FALLING` → `RISING` (matching the other three hall
+sensors); the line-7 AF/EXTI config removed entirely. Hardware-verified: all four
+wheels now produce clean duty↔RPM sweep data.
+
+**Follow-on conflict found and fixed:** moving HALL_RL to PB6 collided with
+soft-I2C's SCL, which was still on PB6 ([[D10]]). Moved SCL to **PA6** (freed by
+the SHOCK removal above) via `codex:rescue`, splitting `soft_i2c.c`'s single
+`SOFT_I2C_PORT` macro into `SOFT_I2C_SCL_PORT` (GPIOA) / `SOFT_I2C_SDA_PORT`
+(GPIOB), since SCL and SDA are no longer on the same port. Hardware-verified:
+MPU-6050 (`YAW=`) and TOF telemetry still read correctly after the move. Build
+clean (`cmake --build build/Debug`). Current pins: HALL_RL=PB6/EXTI6, soft-I2C
+SCL=PA6, SDA=PB11 (see [[D10]], canonical pin map in [[USER]]).
+[[ARCHITECTURE]] §ISR entry points, [[PHASES]] §Phase 4/6/8, and [[USER]]
+§Canonical Pin Map / Hardware Connection Gates updated to match.
+
+**Status**: verified

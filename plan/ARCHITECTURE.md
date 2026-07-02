@@ -49,13 +49,17 @@ orphaned.
 | Display | `LCD_Update` | each `LCD_PERIOD_MS` |
 
 ### ISR / callback entry points
-- **LL EXTI Hall (PB0/PB1/PB2/PA4)** → clear the pending line, then
-  `Encoder_OnPulse` (per wheel).
-- **LL EXTI Shock (PA6)** → clear the pending line, then
-  `FSM_RequestEmergencyFromISR` — latches emergency and stops motors if the FSM is initialized.
+- **LL EXTI Hall (PB0/PB1/PB6/PA4)** → clear the pending line, then
+  `Encoder_OnPulse` (per wheel; LR moved to PB6/EXTI6 in [[DECISIONS]] §D16, sharing
+  the `EXTI9_5_IRQHandler` bucket with no other line).
 - **USART2 DMA RX** → `HC06_OnReceive`; command parsing is drained by `HC06_Process`.
 - **ADC1 DMA half/full complete callbacks** → `line_sensor.c` marks a fresh sample
   after confirming `hadc == &hadc1`.
+
+> The shock sensor (previously PA6/EXTI6 → `FSM_RequestEmergencyFromISR`) was
+> removed — never installed on the hardware ([[DECISIONS]] §D16).
+> `FSM_RequestEmergencyFromISR` remains in `fsm.{h,c}` unreferenced, as a reusable
+> ISR-safe emergency-trigger API for a future sensor.
 
 ---
 

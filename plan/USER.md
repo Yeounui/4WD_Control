@@ -18,16 +18,15 @@ wiring source** — other documents link here instead of repeating the table.
 | H-bridge LR reverse (shield 27) | PB10 / TIM2_CH3 | PWM AF push-pull | Left-rear motor input 2 | HAL TIM |
 | H-bridge RR forward (shield 21) | PB8 / TIM4_CH3 | PWM AF push-pull | Right-rear motor input 1 | HAL TIM |
 | H-bridge RR reverse (shield 22) | PB9 / TIM4_CH4 | PWM AF push-pull | Right-rear motor input 2 | HAL TIM |
-| Soft-I2C SCL | PB6 | GPIO open-drain (bit-bang) | MPU-6050 / VL53L1X ×3 / LCD shared bus | soft_i2c |
-| Soft-I2C SDA | PB7 | GPIO open-drain (bit-bang) | MPU-6050 / VL53L1X ×3 / LCD shared bus | soft_i2c |
+| Soft-I2C SCL | PA6 | GPIO open-drain (bit-bang) | MPU-6050 / VL53L1X ×3 / LCD shared bus | soft_i2c |
+| Soft-I2C SDA | PB11 | GPIO open-drain (bit-bang) | MPU-6050 / VL53L1X ×3 / LCD shared bus | soft_i2c |
 | USART2 TX | PA2 | UART | HC-06 (and bench debug, see [[DECISIONS]] §D3) | HAL (DMA) |
 | USART2 RX | PA3 | UART | HC-06 | HAL (DMA) |
 | ADC1 CH0 | PA0 | ADC + DMA | Tracking module | HAL |
 | EXTI0 | PB0 | EXTI | Hall sensor FL | LL |
 | EXTI1 | PB1 | EXTI | Hall sensor FR | LL |
-| EXTI2 | PB2 | EXTI | Hall sensor RL | LL |
 | EXTI4 | PA4 (Arduino A2) | EXTI | Hall sensor RR | LL |
-| EXTI6 | PA6 (Arduino D12) | EXTI | Shock sensor | LL |
+| EXTI6 | PB6 | EXTI | Hall sensor RL | LL |
 | GPIO | PA1 (Arduino A1) | Output | XSHUT VL53L1X Front | LL GPIO |
 | GPIO | PA7 (Arduino D11) | Output | XSHUT VL53L1X Left | LL GPIO |
 | GPIO | PA8 (Arduino D7) | Output | XSHUT VL53L1X Right | LL GPIO |
@@ -41,10 +40,18 @@ wiring source** — other documents link here instead of repeating the table.
 > the hardware I2C1 peripheral pulls `I2C1_SMBA` onto PB5 and kills RF-reverse PWM
 > ([[DECISIONS]] §D10). Every hardware I2C placement collides (I2C1 PB6/7→SMBA PB5;
 > I2C1 remap PB8/9 = RR motor; I2C2 PB10/11 = LR-reverse). The MPU-6050 / LCD /
-> VL53L1X bus is therefore a **bit-bang software I2C on PB6 (SCL) / PB7 (SDA)**
-> (`soft_i2c`), needing external pull-ups on both lines. Wire the gyro SDA→PB7,
-> SCL→PB6, AD0→GND (addr 0x68). Never re-enable hardware I2C1 on this stack.
+> VL53L1X bus is therefore a **bit-bang software I2C on PA6 (SCL) / PB11 (SDA)**
+> (`soft_i2c`), needing external pull-ups on both lines. Wire the gyro SDA→PB11,
+> SCL→PA6, AD0→GND (addr 0x68). Never re-enable hardware I2C1 on this stack.
 > Hardware-verified: WHO_AM_I=0x68, MPU OK.
+
+> **SHOCK sensor removed, HALL_RL moved to PB6, SCL moved to PA6 (resolved
+> 2026-07-02):** the shock sensor was never installed on the hardware and its
+> PA6/EXTI6 assignment was removed. HALL_RL (rear-left wheel) turned out to be
+> physically wired to PB6, not the previously-assigned PB7, so it now uses
+> PB6/EXTI6 (freed by the shock removal). That created a new conflict with
+> soft-I2C SCL, which was also on PB6 — SCL was moved to PA6 (freed by the same
+> shock removal) to resolve it. See [[DECISIONS]] §D16.
 
 ## Hardware Connection Gates
 
@@ -60,21 +67,21 @@ procedure is in [[PHASES]]; this section is the wiring checklist the user acts o
   not power motors from the MCU rail.
 - **Phase 2 — HC-06**: HC-06 RX←PA2 (TX), HC-06 TX→PA3 (RX), VCC (3.3–6 V per
   module), GND. Cross TX/RX. (Bench debug also uses PA2/PA3 before HC-06 attach.)
-- **Phase 3 — MPU-6050**: SDA→PB7, SCL→PB6 on the software I2C bus, VCC 3.3 V,
+- **Phase 3 — MPU-6050**: SDA→PB11, SCL→PA6 on the software I2C bus, VCC 3.3 V,
   GND, AD0→GND (address 0x68). Use external pull-ups on SDA/SCL if the modules do
   not already provide a suitable bus pull-up set.
-- **Phase 4 — 4× Hall sensor + magnets**: signal lines FL→PB0, FR→PB1, RL→PB2,
+- **Phase 4 — 4× Hall sensor + magnets**: signal lines FL→PB0, FR→PB1, RL→PB6,
   RR→PA4. Mount one
   (or more) magnet(s) per wheel; record magnets-per-revolution for the encoder
   constant.
-- **Phase 6 — I2C LCD + shock sensor + buzzer**: LCD (PCF8574 backpack) shares
-  the software I2C bus on SCL→PB6 and SDA→PB7. VCC 5 V, GND. Shock sensor
-  signal→PA6. Buzzer→PC0, GND.
+- **Phase 6 — I2C LCD + buzzer**: LCD (PCF8574 backpack) shares the software I2C
+  bus on SCL→PA6 and SDA→PB11. VCC 5 V, GND. Buzzer→PC0, GND. (The shock sensor
+  originally planned for this phase was never installed — [[DECISIONS]] §D16.)
 - **Phase 7 — tracking module**: analog out→PA0 (ADC1_CH0), VCC, GND.
-- **Phase 8 — 3× VL53L1X**: all sensors share the software I2C bus on SCL→PB6
-  and SDA→PB7. XSHUT Front→PA1, Left→PA7, Right→PA8. VCC, GND each. Pull-ups on
-  SDA/SCL (one set for the bus). Address separation is done in firmware via XSHUT
-  — see [[ARCHITECTURE]] §vl53l1x.
+- **Phase 8 — 3× VL53L1X**: all sensors share the software I2C bus on SCL→PA6
+  and SDA→PB11. XSHUT Front→PA1, Left→PA7, Right→PA8. VCC, GND each. Pull-ups
+  on SDA/SCL (one set for the bus). Address separation is done in firmware via
+  XSHUT — see [[ARCHITECTURE]] §vl53l1x.
 
 ## CubeMX Generation (per phase) — done by Claude, not the user
 
@@ -87,7 +94,7 @@ STM32CubeMX **6.17.0** headless (verified working — see [[DECISIONS]] §D5):
 ```
 
 Per phase, the `.ioc` targets device **STM32F103RBTx**, enables the peripherals
-listed in [[PHASES]], sets the **LL** driver for Hall/shock EXTI ([[DECISIONS]]
+listed in [[PHASES]], sets the **LL** driver for Hall EXTI ([[DECISIONS]]
 §D4), and toolchain = CMake. Driver logic is then hand-written only inside
 `/* USER CODE BEGIN/END */` blocks. The user's only CubeMX-step involvement is the
 physical hardware gate above.
@@ -110,3 +117,6 @@ stty -F /dev/ttyACM0 115200 raw -echo
 - Kalman `Q`, PID gains (`pid_yaw`, `pid_speed`, `pid_line`) — tuned on hardware.
 - Magnets-per-revolution for the Hall encoder constant ([[PHASES]] §Phase 4).
 - VL53L1X obstacle thresholds (mm) per direction.
+- Duty↔RPM feedforward coefficients (`speed_ff_gain[]`/`speed_ff_offset[]`,
+  order LF/RF/LR/RR): 20.21/988.10, 16.41/1308.95, 14.58/1393.90, 15.00/1353.18
+  ([[DECISIONS]] §D15, [[REVIEW]] §Phase 4 Feedforward Calibration).

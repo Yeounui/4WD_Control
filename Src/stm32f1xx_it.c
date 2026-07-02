@@ -301,16 +301,9 @@ void EXTI9_5_IRQHandler(void)
   {
     LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_6);
     /* USER CODE BEGIN LL_EXTI_LINE_6 */
-    FSM_RequestEmergencyFromISR();
+    Encoder_OnPulse(MOTOR_LR);
     /* USER CODE END LL_EXTI_LINE_6 */
   }
-  /* USER CODE BEGIN LL_EXTI_LINE_7 */
-  if (LL_EXTI_IsActiveFlag_0_31(LL_EXTI_LINE_7) != RESET)
-  {
-    LL_EXTI_ClearFlag_0_31(LL_EXTI_LINE_7);
-    Encoder_OnPulse(MOTOR_LR);
-  }
-  /* USER CODE END LL_EXTI_LINE_7 */
   /* USER CODE BEGIN EXTI9_5_IRQn 1 */
 
   /* USER CODE END EXTI9_5_IRQn 1 */

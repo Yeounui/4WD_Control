@@ -79,9 +79,6 @@ void Error_Handler(void);
 #define HALL_RR_Pin LL_GPIO_PIN_4
 #define HALL_RR_GPIO_Port GPIOA
 #define HALL_RR_EXTI_IRQn EXTI4_IRQn
-#define SHOCK_Pin LL_GPIO_PIN_6
-#define SHOCK_GPIO_Port GPIOA
-#define SHOCK_EXTI_IRQn EXTI9_5_IRQn
 #define VL53_XSHUT_LEFT_Pin LL_GPIO_PIN_7
 #define VL53_XSHUT_LEFT_GPIO_Port GPIOA
 #define HALL_FL_Pin LL_GPIO_PIN_0
@@ -90,7 +87,7 @@ void Error_Handler(void);
 #define HALL_FR_Pin LL_GPIO_PIN_1
 #define HALL_FR_GPIO_Port GPIOB
 #define HALL_FR_EXTI_IRQn EXTI1_IRQn
-#define HALL_RL_Pin LL_GPIO_PIN_7
+#define HALL_RL_Pin LL_GPIO_PIN_6
 #define HALL_RL_GPIO_Port GPIOB
 #define HALL_RL_EXTI_IRQn EXTI9_5_IRQn
 #define VL53_XSHUT_RIGHT_Pin LL_GPIO_PIN_8

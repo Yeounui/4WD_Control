@@ -57,8 +57,8 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** AT-command loopback; phone pairs and commands change state.
 
 ## Phase 3 — IMU + Kalman Yaw (MPU-6050)
-- **Gate (USER):** MPU-6050 on the resolved software I2C bus: SCL→PB6,
-  SDA→PB7, AD0→GND ([[USER]] §Phase 3).
+- **Gate (USER):** MPU-6050 on the resolved software I2C bus: SCL→PA6,
+  SDA→PB11, AD0→GND ([[USER]] §Phase 3).
 - **CubeMX:** no hardware I2C peripheral; keep I2C1 disabled. The bus is driven
   by `soft_i2c` because hardware I2C pin options conflict with the motor shield
   ([[DECISIONS]] §D10).
@@ -67,9 +67,9 @@ proceeds through CubeMX boilerplate → code → verify.
   yaw output streams over USART2 ([[REVIEW]], [[USER]] §empirical).
 
 ## Phase 4 — Hall Encoder + Speed PID
-- **Gate (USER):** Hall sensors + wheel magnets; FL→PB0, FR→PB1, LR→PB2,
+- **Gate (USER):** Hall sensors + wheel magnets; FL→PB0, FR→PB1, LR→PB6,
   RR→PA4; record magnets/rev ([[USER]] §Phase 4).
-- **CubeMX:** EXTI0, EXTI1, EXTI2, EXTI4 with pull-ups and both-edge triggers;
+- **CubeMX:** EXTI0, EXTI1, EXTI4, EXTI6 with pull-ups and both-edge triggers;
   generate `MX_GPIO_Init` and the EXTI IRQ path with LL.
 - **Code:** `encoder.{h,c}` (period-based RPM, single magnet/wheel:
   `Encoder_OnPulse` EXTI ISR measures pulse period, `Encoder_Sample`/
@@ -87,14 +87,18 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** 1 m straight lateral deviation; 90° turn angular error ([[REVIEW]]).
 
 ## Phase 6 — FSM + LCD + Manual + Emergency
-- **Gate (USER):** I2C LCD on the software I2C bus; shock sensor PA6; buzzer PC0
-  ([[USER]] §Phase 6).
-- **CubeMX:** GPIO PC0 output; PA6 EXTI6 with pull-up and both-edge trigger;
-  keep the generated EXTI IRQ path on LL.
+- **Gate (USER):** I2C LCD on the software I2C bus; buzzer PC0 ([[USER]] §Phase 6).
+  The shock sensor originally planned for this phase was never installed on the
+  hardware and its code/pin were removed ([[DECISIONS]] §D16).
+- **CubeMX:** GPIO PC0 output; keep the generated EXTI IRQ path on LL (EXTI6 is
+  already configured for HALL_RL/PB6 in Phase 4, not for this phase).
 - **Code:** `fsm.{h,c}` (7-state machine + transitions + dispatch), `lcd.{h,c}`;
-  wire MANUAL entry/exit and shock-EXTI → EMERGENCY ([[ARCHITECTURE]] §fsm).
-- **Verify:** state + sensors show on LCD; manual mode toggles via HC-06; shock
-  triggers EMERGENCY and overrides all states; buzzer sounds on emergency.
+  wire MANUAL entry/exit ([[ARCHITECTURE]] §fsm). `FSM_RequestEmergencyFromISR`
+  is kept unreferenced as a reusable ISR-safe emergency-trigger API for a future
+  sensor.
+- **Verify:** state + sensors show on LCD; manual mode toggles via HC-06; buzzer
+  sounds on emergency (triggered via `FSM_ResetEmergency`/manual paths, not a
+  shock EXTI, which no longer exists).
 
 ## Phase 7 — Line Tracing
 - **Gate (USER):** tracking module analog out → PA0 ([[USER]] §Phase 7).
@@ -104,7 +108,7 @@ proceeds through CubeMX boilerplate → code → verify.
 - **Verify:** car follows a line; centroid PID stable.
 
 ## Phase 8 — ToF Obstacle Avoidance (VL53L1X ×3)
-- **Gate (USER):** 3 VL53L1X on the software I2C bus: SCL→PB6, SDA→PB7;
+- **Gate (USER):** 3 VL53L1X on the software I2C bus: SCL→PA6, SDA→PB11;
   XSHUT Front→PA1, Left→PA7, Right→PA8; bus pull-ups ([[USER]] §Phase 8).
 - **CubeMX:** configure PA1/PA7/PA8 as initially-LOW outputs. Keep hardware I2C
   disabled and add `Drivers/VL53L1X/` ST API to the CMake sources.

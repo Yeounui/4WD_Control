@@ -27,15 +27,19 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
   complete (commits c92e8ea/9464ac5/813ed5c/4eda73e; encoder reimplemented as
   period-based RPM, single magnet/wheel, in c3236b3). A duty↔RPM feedforward
-  plus narrow-range trim-PID was added on top (uncommitted; see [[REVIEW]]
-  §Phase 4 Feedforward Calibration). HW duty-sweep calibration, feedforward
-  coefficient fit, and the < 5% measurement are still pending._
+  plus narrow-range trim-PID was added on top; HW duty-sweep calibration ran
+  2026-07-02 and the fitted coefficients are applied in `main.c` (see
+  [[REVIEW]] §Phase 4 Feedforward Calibration, [[DECISIONS]] §D15). The final
+  < 5% speed-tracking re-verification with the tuned feedforward is still
+  pending._
 - **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Code
   complete (commit 8e4f2ef); yaw gains, turn angle, ramp limits, and correction
   sign remain unverified on hardware._
-- **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
-  forces EMERGENCY from any state; reset returns to IDLE; buzzer fires. _Code
-  complete (commit 8eb02af); unverified on hardware._
+- **Phase 6** — LCD shows live state/sensors; manual toggle works; reset returns
+  to IDLE; buzzer fires. _Code complete (commit 8eb02af); the shock sensor
+  originally planned for this phase was never installed and its code/pin were
+  removed ([[DECISIONS]] §D16); remaining LCD/manual/buzzer behavior is
+  unverified on hardware._
 - **Phase 7** — line follow stays on track around a test loop. _Code complete
   (commit 9b3d18d); line PID/sign/calibration remain unverified on hardware._
 - **Phase 8** — 3 sensors enumerate on 0x54/0x56/0x58 after XSHUT address
@@ -85,9 +89,8 @@ treating the jitter as a defect.
 To remove the structural steady-state droop of the pure-P speed loop above,
 `main.c`'s speed loop now computes `duty = SpeedFF_Duty(setpoint) + PID_trim`:
 a per-wheel linear feedforward `offset + gain·|RPM|` (`speed_ff_offset[]`,
-`speed_ff_gain[]`, currently placeholder `800.0f`/`20.0f` for all four wheels)
-supplies most of the duty, and `pid_speed` (now clamped to a narrow **±800**
-trim range, was ±3599) only corrects the residual error.
+`speed_ff_gain[]`) supplies most of the duty, and `pid_speed` (clamped to a
+narrow **±800** trim range, was ±3599) only corrects the residual error.
 
 **Calibration procedure (compile-time flags, reflash per run):**
 1. Set `MOTOR_TEST_ON_BOOT` to `0U` and `MOTOR_SWEEP_ON_BOOT` to `1U` in
@@ -100,15 +103,22 @@ trim range, was ±3599) only corrects the residual error.
    streams over USART2: `SWEEP_WHEEL=<name>` then
    `SWEEP=<name>,<duty>,<rpm×1000>` per step.
 3. Per wheel, fit `RPM ≈ (duty − offset) / gain` (linear regression on the
-   captured `SWEEP=` points) and replace the placeholder `speed_ff_gain[]`/
-   `speed_ff_offset[]` values in `main.c` with the fitted per-wheel results.
+   captured `SWEEP=` points, dropping any point whose RPM exceeds ~5x the
+   median as a sensor glitch) and replace `speed_ff_gain[]`/`speed_ff_offset[]`
+   in `main.c` with the fitted per-wheel results.
 4. Revert `MOTOR_SWEEP_ON_BOOT` to `0U`, reflash, and re-run the Phase 4 bench
    tuning procedure above to confirm the < 5% speed-tracking target with the
    tuned feedforward + trim.
 
-Status: code added and host-build-verified (`cmake --build build/Debug`, no
-warnings); the sweep has not been run on hardware yet, and
-`speed_ff_gain[]`/`speed_ff_offset[]` remain unfit placeholders.
+Run with `scripts/sweep_capture.py` (pyserial, `camera_cv2` conda env) which
+auto-captures `SWEEP=` lines to CSV and fits gain/offset per wheel.
+
+**Hardware run 2026-07-02:** two concordant sweep runs after the HALL_RL/PB6
+fix ([[DECISIONS]] §D16) produced final coefficients now applied in `main.c`
+(order LF/RF/LR/RR): gain=20.21/16.41/14.58/15.00,
+offset=988.10/1308.95/1393.90/1353.18. `MOTOR_SWEEP_ON_BOOT` reverted to `0U`
+and reflashed. Step 4 (< 5% speed-tracking re-verification with the tuned
+feedforward) is still pending — see [[DECISIONS]] §D15.
 
 ## Data Collection
 
@@ -126,7 +136,7 @@ warnings); the sweep has not been run on hardware yet, and
   onto PB5 and kills RF-reverse PWM ([[DECISIONS]] §D10). All hardware I2C
   placements collide (I2C1 PB6/7→SMBA on PB5; I2C1 remap PB8/9 = RR motor; I2C2
   PB10/11 = LR-reverse). The sensor bus is therefore a **software bit-bang I2C on
-  PB6/PB7** (`soft_i2c`); never re-enable the hardware I2C1 peripheral on this stack.
+  PA6/PB11** (`soft_i2c`); never re-enable the hardware I2C1 peripheral on this stack.
 - **VL53L1X RAM footprint too large** — current Debug build links at 6152 B RAM
   and 60004 B FLASH with the STSW-IMG007 API. If later ranging options or modules
   threaten the budget, reduce ranging config or sensor count.
