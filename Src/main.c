@@ -27,9 +27,12 @@
 #include "hc06.h"
 #include "lcd.h"
 #include "mpu6050.h"
+#include "soft_i2c.h"
 #include "kalman.h"
+#include "line_sensor.h"
 #include "paramstore.h"
 #include "pid.h"
+#include "vl53l1x.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -37,12 +40,29 @@
 #define STAT_GYRO_THRESH  1.0f
 #define STAT_WINDOW       200U
 #define SPEED_PERIOD_MS   10U
+#define TOF_PERIOD_MS     50U
 #define STREAM_PERIOD_MS  50U
 #define LCD_PERIOD_MS     200U
+#define MOTOR_TEST_ON_BOOT 0U
+#define MOTOR_TEST_DUTY   2000
+#define MOTOR_TEST_MS     1000U
+#define MOTOR_TEST_GAP_MS 500U
+#define MOTOR_SWEEP_ON_BOOT 0U
+#define MOTOR_SWEEP_MIN_DUTY 800
+#define MOTOR_SWEEP_MAX_DUTY 3199
+#define MOTOR_SWEEP_STEP  200
+#define MOTOR_SWEEP_HOLD_MS 1500U
+#define MOTOR_SWEEP_GAP_MS 500U
+#define SPEED_DUTY_MAX    3199.0f
+#define SPEED_TRIM_MAX_DUTY 800.0f
 /* PLACEHOLDER speed-PID gains; USER must tune to hardware. */
 #define SPEED_KP          5.0f
 #define SPEED_KI          0.0f
 #define SPEED_KD          0.0f
+
+#if (MOTOR_TEST_ON_BOOT != 0U) && (MOTOR_SWEEP_ON_BOOT != 0U)
+#error "MOTOR_TEST_ON_BOOT and MOTOR_SWEEP_ON_BOOT are mutually exclusive."
+#endif
 
 /* USER CODE END Includes */
 
@@ -65,8 +85,6 @@
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
 
-I2C_HandleTypeDef hi2c1;
-
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
@@ -78,6 +96,9 @@ DMA_HandleTypeDef hdma_usart2_rx;
 /* USER CODE BEGIN PV */
 volatile uint8_t g_param_save_request = 0U;
 static PID pid_speed[MOTOR_COUNT];
+/* duty/RPM feedforward coefficients measured via MOTOR_SWEEP_ON_BOOT (order: LF, RF, LR, RR). */
+static const float speed_ff_gain[MOTOR_COUNT] = {20.21f, 16.41f, 14.58f, 15.00f};
+static const float speed_ff_offset[MOTOR_COUNT] = {988.10f, 1308.95f, 1393.90f, 1353.18f};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -85,13 +106,17 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
+static uint8_t Hall_ReadLevel(MotorId wheel);
+static void MotorTest_Run(void);
+static void MotorSweep_Run(void);
+static const char *MotorTest_Name(MotorId wheel);
+static int16_t SpeedFF_Duty(MotorId wheel, float setpoint_rpm);
 
 /* USER CODE END PFP */
 
@@ -131,7 +156,6 @@ int main(void)
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_ADC1_Init();
-  MX_I2C1_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
@@ -140,6 +164,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   uint32_t last_tick;
   uint32_t last_speed_tick;
+  uint32_t last_tof_tick;
   uint32_t last_stream_tick;
   uint32_t last_lcd_tick;
   uint32_t stat_count;
@@ -148,70 +173,26 @@ int main(void)
   float stored_r;
   float stored_bias;
   float yaw;
+  float line_error;
+  uint8_t line_ok;
   uint8_t mpu_ok;
+  uint8_t tof_ok;
 
   Motor_Init();
-  /* ===== MOTOR_DIAG (throwaway, remove before commit) ===== */
-  {
-    /* Pin-level readback: drive a command, sample each motor pin's actual level (IDR),
-       print high-count out of 2000 (~ effective duty %). Shows what the MCU truly outputs. */
-    static const struct { GPIO_TypeDef *port; uint16_t pin; const char *label; } diag_pins[8] = {
-      { GPIOB, GPIO_PIN_3,  "PB3-LFf"  },
-      { GPIOA, GPIO_PIN_10, "PA10-LFr" },
-      { GPIOB, GPIO_PIN_4,  "PB4-RFf"  },
-      { GPIOB, GPIO_PIN_5,  "PB5-RFr"  },
-      { GPIOA, GPIO_PIN_9,  "PA9-LRf"  },
-      { GPIOB, GPIO_PIN_10, "PB10-LRr" },
-      { GPIOB, GPIO_PIN_8,  "PB8-RRf"  },
-      { GPIOB, GPIO_PIN_9,  "PB9-RRr"  }
-    };
-    static const struct { const char *name; MotorId id; int16_t duty; } scen[4] = {
-      { "STOP",   MOTOR_RF, 0     },
-      { "RF_FWD", MOTOR_RF, 3400  },
-      { "RF_REV", MOTOR_RF, -3400 },
-      { "LF_FWD", MOTOR_LF, 3400  }
-    };
-    char line[80];
-    int sc;
-    int p;
-    int s;
-    int n;
-    uint32_t high;
-
-    for (;;)
-    {
-      for (sc = 0; sc < 4; sc++)
-      {
-        Motor_StopAll();
-        Motor_SetDuty(scen[sc].id, scen[sc].duty);
-        HAL_Delay(150);
-        for (p = 0; p < 8; p++)
-        {
-          high = 0;
-          for (s = 0; s < 2000; s++)
-          {
-            if (HAL_GPIO_ReadPin(diag_pins[p].port, diag_pins[p].pin) == GPIO_PIN_SET)
-            {
-              high++;
-            }
-          }
-          n = snprintf(line, sizeof(line), "%-6s %-9s = %4lu/2000\r\n",
-                       scen[sc].name, diag_pins[p].label, (unsigned long)high);
-          if (n > 0)
-          {
-            HAL_UART_Transmit(&huart2, (uint8_t *)line, (uint16_t)n, HAL_MAX_DELAY);
-          }
-        }
-        HAL_UART_Transmit(&huart2, (uint8_t *)"----\r\n", 6U, HAL_MAX_DELAY);
-        Motor_StopAll();
-        HAL_Delay(800);
-      }
-    }
-  }
-  /* ===== END MOTOR_DIAG ===== */
   Encoder_Init();
   FSM_Init();
   HC06_Init();
+  SoftI2C_Init();
+  tof_ok = (TOF_Init_All() == 0U) ? 1U : 0U;
+  if (tof_ok != 0U)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"TOF OK\r\n", 8U, HAL_MAX_DELAY);
+  }
+  else
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)"TOF FAIL\r\n", 10U, HAL_MAX_DELAY);
+  }
+  line_ok = (LineSensor_Init((const LineSensorConfig *)0) == HAL_OK) ? 1U : 0U;
 
   if (MPU6050_Init() == 0U)
   {
@@ -226,6 +207,7 @@ int main(void)
 
   Kalman_Init();
   yaw = 0.0f;
+  line_error = 0.0f;
   if (ParamStore_Load(&stored_r, &stored_bias) != 0U)
   {
     Kalman_SetR(stored_r);
@@ -239,7 +221,8 @@ int main(void)
 
   for (MotorId w = MOTOR_LF; w < MOTOR_COUNT; w++)
   {
-    PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD, -3599.0f, 3599.0f);
+    PID_Init(&pid_speed[w], SPEED_KP, SPEED_KI, SPEED_KD,
+             -SPEED_TRIM_MAX_DUTY, SPEED_TRIM_MAX_DUTY);
   }
 
   stat_count = 0U;
@@ -249,8 +232,21 @@ int main(void)
   LCD_Update(FSM_GetStateName(), yaw, mpu_ok);
   last_tick = HAL_GetTick();
   last_speed_tick = last_tick;
+  last_tof_tick = last_tick;
   last_stream_tick = last_tick;
   last_lcd_tick = last_tick;
+  if (MOTOR_SWEEP_ON_BOOT != 0U)
+  {
+    MotorSweep_Run();
+  }
+  else if (MOTOR_TEST_ON_BOOT != 0U)
+  {
+    MotorTest_Run();
+  }
+  else
+  {
+    Motor_StopAll();
+  }
 
   /* USER CODE END 2 */
 
@@ -263,7 +259,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
     uint32_t now;
     float dt;
-    float omega_dps;
+    float omega_dps = 0.0f;
     float accel_angle;
     uint8_t sample_ok;
 
@@ -286,7 +282,6 @@ int main(void)
     }
 
     now = HAL_GetTick();
-    FSM_Dispatch();
     dt = (float)(now - last_tick) / 1000.0f;
     if (dt <= 0.0f)
     {
@@ -303,12 +298,14 @@ int main(void)
       Encoder_Sample(speed_dt);
       for (w = MOTOR_LF; w < MOTOR_COUNT; w++)
       {
+        float duty;
         float measured;
-        float out;
+        float trim;
         float setpoint;
         uint32_t primask;
         uint8_t output_valid;
 
+        duty = 0.0f;
         setpoint = 0.0f;
         output_valid = 0U;
         if (FSM_IsMotionEnabled() != 0U)
@@ -319,13 +316,14 @@ int main(void)
           {
             measured = -measured;
           }
-          out = PID_Update(&pid_speed[w], setpoint, measured, speed_dt);
+          trim = PID_Update(&pid_speed[w], setpoint, measured, speed_dt);
+          duty = (float)SpeedFF_Duty(w, setpoint) + trim;
           output_valid = 1U;
         }
         else
         {
           PID_Reset(&pid_speed[w]);
-          out = 0.0f;
+          trim = 0.0f;
         }
 
         primask = __get_PRIMASK();
@@ -343,7 +341,7 @@ int main(void)
         }
         else
         {
-          Motor_SetDuty(w, (int16_t)out);
+          Motor_SetDuty(w, (int16_t)duty);
         }
         if (primask == 0U)
         {
@@ -398,17 +396,109 @@ int main(void)
       stat_sumsq = 0.0f;
     }
 
+    {
+      LineSensorSample line_sample;
+
+      line_sample = LineSensor_Read();
+      line_error = line_sample.error;
+      line_ok = line_sample.active;
+    }
+
+    if ((tof_ok != 0U) && ((now - last_tof_tick) >= TOF_PERIOD_MS))
+    {
+      if (TOF_UpdateAll() == 0U)
+      {
+        FSM_SetObstacle(TOF_IsObstacle());
+      }
+      last_tof_tick = now;
+    }
+    FSM_Dispatch(yaw, omega_dps, dt, line_error, line_ok);
+
     if ((now - last_stream_tick) >= STREAM_PERIOD_MS)
     {
       char buffer[32];
+      char spdbuf[160];
+      char tofbuf[160];
       int length;
+      int speed_length;
+      int tof_length;
       int32_t yaw_centi;
+      long setpoint_drpm[MOTOR_COUNT];
+      long measured_drpm[MOTOR_COUNT];
+      unsigned long counts[MOTOR_COUNT];
+      MotorId wheel;
 
       yaw_centi = (int32_t)(yaw * 100.0f);
       length = snprintf(buffer, sizeof(buffer), "YAW=%ld\r\n", (long)yaw_centi);
       if (length > 0)
       {
         HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+      }
+      for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+      {
+        setpoint_drpm[wheel] = (long)(FSM_GetSpeedSetpoint(wheel) * 10.0f);
+        measured_drpm[wheel] = (long)(Encoder_GetSpeed(wheel) * 10.0f);
+        counts[wheel] = (unsigned long)Encoder_GetCount(wheel);
+      }
+      speed_length = snprintf(spdbuf, sizeof(spdbuf),
+                              "SPD=%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld;CNT=%lu,%lu,%lu,%lu;HALL=%u,%u,%u,%u\r\n",
+                              setpoint_drpm[MOTOR_LF], measured_drpm[MOTOR_LF],
+                              setpoint_drpm[MOTOR_RF], measured_drpm[MOTOR_RF],
+                              setpoint_drpm[MOTOR_LR], measured_drpm[MOTOR_LR],
+                              setpoint_drpm[MOTOR_RR], measured_drpm[MOTOR_RR],
+                              counts[MOTOR_LF], counts[MOTOR_RF],
+                              counts[MOTOR_LR], counts[MOTOR_RR],
+                              (unsigned int)Hall_ReadLevel(MOTOR_LF),
+                              (unsigned int)Hall_ReadLevel(MOTOR_RF),
+                              (unsigned int)Hall_ReadLevel(MOTOR_LR),
+                              (unsigned int)Hall_ReadLevel(MOTOR_RR));
+      if (speed_length > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)spdbuf, (uint16_t)speed_length, HAL_MAX_DELAY);
+      }
+      if (tof_ok != 0U)
+      {
+        TOF_Sample tof_front;
+        TOF_Sample tof_left;
+        TOF_Sample tof_right;
+        uint8_t tof_ack_default;
+        uint8_t tof_ack_front;
+        uint8_t tof_ack_left;
+        uint8_t tof_ack_right;
+
+        tof_front = TOF_GetSample(TOF_FRONT);
+        tof_left = TOF_GetSample(TOF_LEFT);
+        tof_right = TOF_GetSample(TOF_RIGHT);
+        tof_ack_default = (SoftI2C_IsDeviceReady(0x52U) == 0U) ? 1U : 0U;
+        tof_ack_front = (SoftI2C_IsDeviceReady(0x54U) == 0U) ? 1U : 0U;
+        tof_ack_left = (SoftI2C_IsDeviceReady(0x56U) == 0U) ? 1U : 0U;
+        tof_ack_right = (SoftI2C_IsDeviceReady(0x58U) == 0U) ? 1U : 0U;
+        tof_length = snprintf(tofbuf, sizeof(tofbuf),
+                              "TOF=%u,%u,%u;OBS=%u;RDY=%u,%u,%u;PRES=%u,%u,%u;STAT=%u,%u,%u;RAW=%u,%u,%u;ACK=%u,%u,%u,%u\r\n",
+                              (unsigned int)tof_front.distance_mm,
+                              (unsigned int)tof_left.distance_mm,
+                              (unsigned int)tof_right.distance_mm,
+                              (unsigned int)TOF_IsObstacle(),
+                              (unsigned int)tof_front.ready,
+                              (unsigned int)tof_left.ready,
+                              (unsigned int)tof_right.ready,
+                              (unsigned int)tof_front.present,
+                              (unsigned int)tof_left.present,
+                              (unsigned int)tof_right.present,
+                              (unsigned int)tof_front.range_status,
+                              (unsigned int)tof_left.range_status,
+                              (unsigned int)tof_right.range_status,
+                              (unsigned int)tof_front.raw_distance_mm,
+                              (unsigned int)tof_left.raw_distance_mm,
+                              (unsigned int)tof_right.raw_distance_mm,
+                              (unsigned int)tof_ack_default,
+                              (unsigned int)tof_ack_front,
+                              (unsigned int)tof_ack_left,
+                              (unsigned int)tof_ack_right);
+        if (tof_length > 0)
+        {
+          HAL_UART_Transmit(&huart2, (uint8_t *)tofbuf, (uint16_t)tof_length, HAL_MAX_DELAY);
+        }
       }
       last_stream_tick = now;
     }
@@ -435,13 +525,12 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -490,7 +579,7 @@ static void MX_ADC1_Init(void)
   */
   hadc1.Instance = ADC1;
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
@@ -516,40 +605,6 @@ static void MX_ADC1_Init(void)
 }
 
 /**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.ClockSpeed = 400000;
-  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
-/**
   * @brief TIM1 Initialization Function
   * @param None
   * @retval None
@@ -571,7 +626,7 @@ static void MX_TIM1_Init(void)
   htim1.Instance = TIM1;
   htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 3599;
+  htim1.Init.Period = 3199;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -639,7 +694,7 @@ static void MX_TIM2_Init(void)
   htim2.Instance = TIM2;
   htim2.Init.Prescaler = 0;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 3599;
+  htim2.Init.Period = 3199;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -692,7 +747,7 @@ static void MX_TIM3_Init(void)
   htim3.Instance = TIM3;
   htim3.Init.Prescaler = 0;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 3599;
+  htim3.Init.Period = 3199;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
@@ -745,7 +800,7 @@ static void MX_TIM4_Init(void)
   htim4.Instance = TIM4;
   htim4.Init.Prescaler = 0;
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim4.Init.Period = 3599;
+  htim4.Init.Period = 3199;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
@@ -843,7 +898,6 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
-  LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOD);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOA);
   LL_APB2_GRP1_EnableClock(LL_APB2_GRP1_PERIPH_GPIOB);
 
@@ -861,7 +915,7 @@ static void MX_GPIO_Init(void)
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTA, LL_GPIO_AF_EXTI_LINE4);
 
   /**/
-  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTA, LL_GPIO_AF_EXTI_LINE6);
+  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE6);
 
   /**/
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE0);
@@ -870,48 +924,35 @@ static void MX_GPIO_Init(void)
   LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE1);
 
   /**/
-  LL_GPIO_AF_SetEXTISource(LL_GPIO_AF_EXTI_PORTB, LL_GPIO_AF_EXTI_LINE2);
-
-  /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_4;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_6;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_0;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
   EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_1;
   EXTI_InitStruct.LineCommand = ENABLE;
   EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
-  LL_EXTI_Init(&EXTI_InitStruct);
-
-  /**/
-  EXTI_InitStruct.Line_0_31 = LL_EXTI_LINE_2;
-  EXTI_InitStruct.LineCommand = ENABLE;
-  EXTI_InitStruct.Mode = LL_EXTI_MODE_IT;
-  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING_FALLING;
+  EXTI_InitStruct.Trigger = LL_EXTI_TRIGGER_RISING;
   LL_EXTI_Init(&EXTI_InitStruct);
 
   /**/
   LL_GPIO_SetPinPull(HALL_RR_GPIO_Port, HALL_RR_Pin, LL_GPIO_PULL_UP);
-
-  /**/
-  LL_GPIO_SetPinPull(SHOCK_GPIO_Port, SHOCK_Pin, LL_GPIO_PULL_UP);
 
   /**/
   LL_GPIO_SetPinPull(HALL_FL_GPIO_Port, HALL_FL_Pin, LL_GPIO_PULL_UP);
@@ -924,9 +965,6 @@ static void MX_GPIO_Init(void)
 
   /**/
   LL_GPIO_SetPinMode(HALL_RR_GPIO_Port, HALL_RR_Pin, LL_GPIO_MODE_INPUT);
-
-  /**/
-  LL_GPIO_SetPinMode(SHOCK_GPIO_Port, SHOCK_Pin, LL_GPIO_MODE_INPUT);
 
   /**/
   LL_GPIO_SetPinMode(HALL_FL_GPIO_Port, HALL_FL_Pin, LL_GPIO_MODE_INPUT);
@@ -942,8 +980,7 @@ static void MX_GPIO_Init(void)
   NVIC_EnableIRQ(EXTI0_IRQn);
   NVIC_SetPriority(EXTI1_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI1_IRQn);
-  NVIC_SetPriority(EXTI2_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
-  NVIC_EnableIRQ(EXTI2_IRQn);
+  /* EXTI2_IRQn removed: HALL_RL moved from PB2 to PB6 (EXTI9_5 below) */
   NVIC_SetPriority(EXTI4_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
   NVIC_EnableIRQ(EXTI4_IRQn);
   NVIC_SetPriority(EXTI9_5_IRQn, NVIC_EncodePriority(NVIC_GetPriorityGrouping(),1, 0));
@@ -955,6 +992,182 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static const char *MotorTest_Name(MotorId wheel)
+{
+  switch (wheel)
+  {
+    case MOTOR_LF:
+      return "LF";
+
+    case MOTOR_RF:
+      return "RF";
+
+    case MOTOR_LR:
+      return "LR";
+
+    case MOTOR_RR:
+      return "RR";
+
+    case MOTOR_COUNT:
+    default:
+      return "INVALID";
+  }
+}
+
+static int16_t SpeedFF_Duty(MotorId wheel, float setpoint_rpm)
+{
+  float magnitude;
+
+  if ((wheel >= MOTOR_COUNT) || (setpoint_rpm == 0.0f))
+  {
+    return 0;
+  }
+
+  magnitude = speed_ff_offset[wheel] + (speed_ff_gain[wheel] * fabsf(setpoint_rpm));
+  if (magnitude > SPEED_DUTY_MAX)
+  {
+    magnitude = SPEED_DUTY_MAX;
+  }
+
+  if (setpoint_rpm < 0.0f)
+  {
+    return (int16_t)(-magnitude);
+  }
+
+  return (int16_t)magnitude;
+}
+
+static void MotorTest_Print(const char *phase, MotorId wheel)
+{
+  char buffer[128];
+  int length;
+
+  length = snprintf(buffer, sizeof(buffer),
+                    "TEST=%s,%s;CNT=%lu,%lu,%lu,%lu;HALL=%u,%u,%u,%u\r\n",
+                    phase, MotorTest_Name(wheel),
+                    (unsigned long)Encoder_GetCount(MOTOR_LF),
+                    (unsigned long)Encoder_GetCount(MOTOR_RF),
+                    (unsigned long)Encoder_GetCount(MOTOR_LR),
+                    (unsigned long)Encoder_GetCount(MOTOR_RR),
+                    (unsigned int)Hall_ReadLevel(MOTOR_LF),
+                    (unsigned int)Hall_ReadLevel(MOTOR_RF),
+                    (unsigned int)Hall_ReadLevel(MOTOR_LR),
+                    (unsigned int)Hall_ReadLevel(MOTOR_RR));
+  if (length > 0)
+  {
+    HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+  }
+}
+
+static void MotorTest_Run(void)
+{
+  MotorId wheel;
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR TEST BEGIN\r\n", 18U, HAL_MAX_DELAY);
+  Motor_StopAll();
+  HAL_Delay(MOTOR_TEST_GAP_MS);
+
+  for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+  {
+    MotorTest_Print("FWD_START", wheel);
+    Motor_SetDuty(wheel, MOTOR_TEST_DUTY);
+    HAL_Delay(MOTOR_TEST_MS);
+    Motor_StopAll();
+    MotorTest_Print("FWD_STOP", wheel);
+    HAL_Delay(MOTOR_TEST_GAP_MS);
+
+    MotorTest_Print("REV_START", wheel);
+    Motor_SetDuty(wheel, -MOTOR_TEST_DUTY);
+    HAL_Delay(MOTOR_TEST_MS);
+    Motor_StopAll();
+    MotorTest_Print("REV_STOP", wheel);
+    HAL_Delay(MOTOR_TEST_GAP_MS);
+  }
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR TEST END\r\n", 16U, HAL_MAX_DELAY);
+}
+
+static void MotorSweep_Run(void)
+{
+  MotorId wheel;
+  float hold_dt;
+
+  hold_dt = (float)MOTOR_SWEEP_HOLD_MS / 1000.0f;
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR SWEEP BEGIN\r\n", 19U, HAL_MAX_DELAY);
+  Motor_StopAll();
+  HAL_Delay(MOTOR_SWEEP_GAP_MS);
+
+  for (wheel = MOTOR_LF; wheel < MOTOR_COUNT; wheel++)
+  {
+    int16_t duty;
+    char buffer[96];
+    int length;
+
+    length = snprintf(buffer, sizeof(buffer), "SWEEP_WHEEL=%s\r\n", MotorTest_Name(wheel));
+    if (length > 0)
+    {
+      HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+    }
+
+    for (duty = MOTOR_SWEEP_MIN_DUTY; duty <= MOTOR_SWEEP_MAX_DUTY; )
+    {
+      float rpm;
+      int32_t rpm_x1000;
+
+      Motor_SetDuty(wheel, duty);
+      HAL_Delay(MOTOR_SWEEP_HOLD_MS);
+      Encoder_Sample(hold_dt);
+      rpm = Encoder_GetSpeed(wheel);
+      rpm_x1000 = (int32_t)(rpm * 1000.0f);
+      length = snprintf(buffer, sizeof(buffer), "SWEEP=%s,%d,%ld\r\n",
+                        MotorTest_Name(wheel), (int)duty, (long)rpm_x1000);
+      if (length > 0)
+      {
+        HAL_UART_Transmit(&huart2, (uint8_t *)buffer, (uint16_t)length, HAL_MAX_DELAY);
+      }
+
+      Motor_StopAll();
+      HAL_Delay(MOTOR_SWEEP_GAP_MS);
+
+      if (duty == MOTOR_SWEEP_MAX_DUTY)
+      {
+        break;
+      }
+      if ((MOTOR_SWEEP_MAX_DUTY - duty) <= MOTOR_SWEEP_STEP)
+      {
+        duty = MOTOR_SWEEP_MAX_DUTY;
+      }
+      else
+      {
+        duty = (int16_t)(duty + MOTOR_SWEEP_STEP);
+      }
+    }
+  }
+
+  HAL_UART_Transmit(&huart2, (uint8_t *)"MOTOR SWEEP END\r\n", 17U, HAL_MAX_DELAY);
+}
+
+static uint8_t Hall_ReadLevel(MotorId wheel)
+{
+  switch (wheel)
+  {
+    case MOTOR_LF:
+      return LL_GPIO_IsInputPinSet(HALL_FL_GPIO_Port, HALL_FL_Pin) ? 1U : 0U;
+
+    case MOTOR_RF:
+      return LL_GPIO_IsInputPinSet(HALL_FR_GPIO_Port, HALL_FR_Pin) ? 1U : 0U;
+
+    case MOTOR_LR:
+      return LL_GPIO_IsInputPinSet(HALL_RL_GPIO_Port, HALL_RL_Pin) ? 1U : 0U;
+
+    case MOTOR_RR:
+      return LL_GPIO_IsInputPinSet(HALL_RR_GPIO_Port, HALL_RR_Pin) ? 1U : 0U;
+
+    case MOTOR_COUNT:
+    default:
+      return 0U;
+  }
+}
 
 /* USER CODE END 4 */
 

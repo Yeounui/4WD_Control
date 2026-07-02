@@ -2,7 +2,7 @@
 
 #include "main.h"
 
-#define MOTOR_MAX_DUTY 3599
+#define MOTOR_MAX_DUTY 3199
 
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;

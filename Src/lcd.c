@@ -1,6 +1,7 @@
 #include "lcd.h"
 
 #include "main.h"
+#include "soft_i2c.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -12,8 +13,6 @@
 #define LCD_BACKLIGHT      0x08U
 #define LCD_LINE_1         0x80U
 #define LCD_LINE_2         0xC0U
-
-extern I2C_HandleTypeDef hi2c1;
 
 static uint8_t lcd_available;
 static uint8_t tx_buffer[(LCD_COLUMNS + 1U) * 6U];
@@ -40,11 +39,9 @@ static uint8_t LCD_Transmit(uint16_t length)
 {
   HAL_StatusTypeDef status;
 
-  status = HAL_I2C_Master_Transmit(&hi2c1,
-                                   (uint16_t)(LCD_PCF8574_ADDRESS_7BIT << 1),
-                                   tx_buffer,
-                                   length,
-                                   LCD_I2C_TIMEOUT_MS);
+  status = SoftI2C_MasterTransmit((uint8_t)(LCD_PCF8574_ADDRESS_7BIT << 1),
+                                  tx_buffer,
+                                  length);
   if (status != HAL_OK)
   {
     lcd_available = 0U;
@@ -99,7 +96,7 @@ void LCD_Init(void)
 
   lcd_available = 0U;
   address = (uint16_t)(LCD_PCF8574_ADDRESS_7BIT << 1);
-  if (HAL_I2C_IsDeviceReady(&hi2c1, address, 2U, LCD_I2C_TIMEOUT_MS) != HAL_OK)
+  if (SoftI2C_IsDeviceReady((uint8_t)address) != HAL_OK)
   {
     return;
   }

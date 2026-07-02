@@ -13,8 +13,8 @@ tick.
 
 | Item | Detail |
 |---|---|
-| MCU | STM32F103RB (Cortex-M3, 72 MHz, **20 KB SRAM / 128 KB Flash**) |
-| Drive | DC motor × 4 through H-bridge shield (two direction inputs per motor) |
+| MCU | STM32F103RB (Cortex-M3, HSI/2 × PLL16 = **64 MHz**, **20 KB SRAM / 128 KB Flash**) |
+| Drive | DC motor × 4 through H-bridge shield (two PWM direction inputs per motor) |
 | Wireless | HC-06 Bluetooth — USART2 AT-command manual control |
 | Libraries | STM32 HAL (base) · LL (latency-critical EXTI) · VL53L1X ST API |
 
@@ -24,9 +24,10 @@ tick.
 
 ## In Scope
 
-- 8-GPIO H-bridge direction drive (forward/reverse/stop per motor)
+- 8-channel TIM PWM H-bridge direction drive (signed duty per motor;
+  forward/reverse/coast-at-zero)
 - Bluetooth manual control + AT-command parser (HC-06 / USART2)
-- IMU yaw estimation with a 1-D Kalman filter (MPU-6050 / I2C1)
+- IMU yaw estimation with a 1-D Kalman filter (MPU-6050 / software I2C on PB6/PB7)
 - DIY Hall-sensor wheel encoders + per-wheel speed PID (EXTI)
 - Straight-line yaw PID, S-curve speed profiling, gyro-integrated turns
 - 7-state FSM coordinating all behaviors
@@ -39,8 +40,9 @@ tick.
 
 - **No dynamic allocation** — `malloc`/`new` prohibited; all buffers statically
   declared. (All the more important given only 20 KB SRAM.)
-- **HAL + LL mixed** per ST AN5044: HAL for GPIO / I2C / ADC-DMA / USART-DMA /
-  SysTick; LL for latency-critical EXTI (Hall + shock). See [[DECISIONS]] §D4.
+- **HAL + LL mixed** per ST AN5044: HAL for TIM PWM / I2C / ADC-DMA /
+  USART-DMA / SysTick; LL for latency-critical EXTI (Hall + shock). See
+  [[DECISIONS]] §D4.
 - **CubeMX-first**: every phase generates peripheral boilerplate in STM32CubeMX,
   then driver logic is hand-written inside `USER CODE` sections. See
   [[DECISIONS]] §D5.

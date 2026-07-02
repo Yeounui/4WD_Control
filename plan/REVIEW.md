@@ -9,28 +9,137 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
 |---|---|---|---|
 | Straight-line lateral deviation (1 m run) | no PID | **< 3 cm** | Phase 5 / 9 |
 | 90° turn angular error | timer method ±8° | gyro integration **< ±2°** | Phase 5 / 9 |
-| Wheel speed tracking error | open-loop direction drive | **< 5%** with Hall PID after speed actuator is selected | Phase 4 |
+| Wheel speed tracking error | open-loop PWM duty drive | **< 5%** with Hall PID after tuning | Phase 4 |
 | Distance measurement error (VL53L1X) | HC-SR04 ±3 mm | **< ±1 mm** at 20 cm | Phase 8 |
 | Kalman vs complementary yaw drift | complementary baseline | **< 1°/min** at rest | Phase 3 / 9 |
 
 ## Per-Phase Verification
 
 - **Phase 0** — project builds; empty firmware flashes and runs.
-- **Phase 1** — each motor stops with both inputs LOW, runs forward from its first
-  shield input, and runs reverse from its second; no state drives both inputs HIGH.
+- **Phase 1** — verified 2026-06-26 on hardware: each motor stops/coasts at duty
+  0, runs forward from positive signed PWM duty on its first shield input, and
+  runs reverse from negative duty on its second; no command drives both PWM
+  directions non-zero for the same motor.
 - **Phase 2** — AT-command loopback echoes; phone pairs; each command maps to the
   expected `FSM_SetState`.
 - **Phase 3** — 500 stationary samples collected over USART2; variance recorded as
   `R`; yaw stream stable. Kalman drift metric measured.
-- **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%.
-- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°.
-- **Phase 6** — LCD shows live state/sensors; manual toggle works; shock EXTI
-  forces EMERGENCY from any state; reset returns to IDLE.
-- **Phase 7** — line follow stays on track around a test loop.
-- **Phase 8** — 3 sensors enumerate on 0x52/0x54/0x56; distance error < ±1 mm at
-  20 cm; obstacle triggers S-curve decel → TURN → STRAIGHT.
+- **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
+  complete (commits c92e8ea/9464ac5/813ed5c/4eda73e; encoder reimplemented as
+  period-based RPM, single magnet/wheel, in c3236b3, which also obsoletes the
+  encoder-scale hand-rotation validation sub-step — [[DECISIONS]] §D17). A
+  duty↔RPM feedforward plus narrow-range trim-PID was added on top; HW
+  duty-sweep calibration ran 2026-07-02 and the fitted coefficients are applied
+  in `main.c` (see [[REVIEW]] §Phase 4 Feedforward Calibration, [[DECISIONS]]
+  §D15). **The `< 5%` re-verification is now actively blocked, not just
+  pending: two 2026-07-02 ground-driving attempts showed corrupted encoder
+  telemetry (implausible 10,000+ RPM spikes, a stuck-high `CNT` on one wheel)
+  traced to motor-current EMI on the Hall lines — confirmed by a clean,
+  zero-drift motors-idle capture that rules out a wiring/pull-up cause. See
+  [[DECISIONS]] §D18. Adding `Ki` to the trim PID is deferred until this signal
+  integrity issue is fixed and re-verified._
+- **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Code
+  complete (commit 8e4f2ef); yaw gains, turn angle, ramp limits, and correction
+  sign remain unverified on hardware._
+- **Phase 6** — LCD shows live state/sensors; manual toggle works; reset returns
+  to IDLE; buzzer fires. _Code complete (commit 8eb02af); the shock sensor
+  originally planned for this phase was never installed and its code/pin were
+  removed ([[DECISIONS]] §D16); remaining LCD/manual/buzzer behavior is
+  unverified on hardware._
+- **Phase 7** — line follow stays on track around a test loop. _Code complete
+  (commit 9b3d18d); line PID/sign/calibration remain unverified on hardware._
+- **Phase 8** — 3 sensors enumerate on 0x54/0x56/0x58 after XSHUT address
+  assignment; distance error < ±1 mm at 20 cm; obstacle triggers S-curve decel →
+  TURN → STRAIGHT. _Code complete (commit 6f00a92); ranging and thresholds
+  remain unverified on hardware, and are now a **confirmed failing** item, not
+  just unverified: two 2026-07-02 ground-driving runs (one ending in an actual
+  collision) both show `OBS=0` for the entire capture — AVOID never triggered.
+  See [[DECISIONS]] §D19._
 - **Phase 9** — all metrics above re-measured end-to-end; Kalman-vs-complementary
   drift comparison graph produced from USART2→CSV data.
+
+## Phase 4 Bench Tuning — speed telemetry
+
+Firmware emits a per-wheel telemetry line on **USART2** every `STREAM_PERIOD_MS`
+(50 ms), alongside the existing `YAW=` line (bench: HC-06 detached, USB-TTL on
+PA2/PA3 — [[DECISIONS]] §D3):
+
+```
+SPD=sLF,mLF,sRF,mRF,sLR,mLR,sRR,mRR;CNT=cLF,cRF,cLR,cRR
+```
+
+- `s*`/`m*` = commanded vs measured speed in **deci-RPM** (÷10 → RPM); order LF, RF, LR, RR.
+- `c*` = cumulative Hall pulse count (`Encoder_GetCount`), same order.
+
+**Encoder is period-based, single magnet/wheel ([[DECISIONS]] §D17):** `m` is
+derived from the actual inter-pulse period, not a coarse fixed-window
+pulse-delta, so it is a legitimate instantaneous RPM reading rather than a
+liveness-only quantized value — **when the signal is clean**. Under real
+driving load, `m` and `CNT` can currently show noise-corrupted values (see
+[[DECISIONS]] §D18); treat implausible `m` spikes (order of magnitude above
+the commanded setpoint) as a signal-integrity red flag, not as data to fit
+gains against.
+
+**Procedure:**
+1. **Confirm signal integrity first** (added 2026-07-02, see [[DECISIONS]]
+   §D18). Capture ~10 s with motors idle (`AT+STOP`, no drive command); `CNT`
+   must not drift at all. Then capture ~10 s while driving; if `m`/`CNT` still
+   show implausible spikes only in the driving capture, the Hall lines are
+   picking up motor-current EMI and must be hardened (debounce/filtering)
+   before trusting any RPM_avg/error computed below.
+2. **Measure + tune.** Command FORWARD (80 RPM setpoint). Compute steady-state
+   average RPM per wheel from `CNT` over a multi-second window Δt:
+   `RPM_avg = (ΔCNT / Δt) × 60` (a few seconds so ±1 count is well under 5%);
+   error = `|RPM_avg − 80| / 80`. Adjust `SPEED_KP/KI/KD` (`main.c`, currently
+   5/0/0), rebuild + reflash, repeat until all four wheels are < 5%.
+
+(The former step 1, hand-rotating a wheel to validate `ENCODER_COUNTS_PER_REV`,
+is obsolete — that constant no longer exists in the code; see [[DECISIONS]]
+§D17.)
+
+Gains are compile-time (no runtime gain command); each iteration is a reflash.
+The P-only loop (`Kp=5, Ki=0`) runs on the same coarse per-tick RPM and is
+expected to jitter/steady-state-droop — tune around it (add `Ki`) rather than
+treating the jitter as a defect, **but only once step 1's signal-integrity
+check passes** ([[DECISIONS]] §D18).
+
+## Phase 4 Feedforward Calibration — duty↔RPM sweep
+
+To remove the structural steady-state droop of the pure-P speed loop above,
+`main.c`'s speed loop now computes `duty = SpeedFF_Duty(setpoint) + PID_trim`:
+a per-wheel linear feedforward `offset + gain·|RPM|` (`speed_ff_offset[]`,
+`speed_ff_gain[]`) supplies most of the duty, and `pid_speed` (clamped to a
+narrow **±800** trim range, was ±3599) only corrects the residual error.
+
+**Calibration procedure (compile-time flags, reflash per run):**
+1. Set `MOTOR_TEST_ON_BOOT` to `0U` and `MOTOR_SWEEP_ON_BOOT` to `1U` in
+   `main.c` (the two are mutually exclusive — a `#error` enforces this),
+   rebuild, reflash.
+2. On boot, `MotorSweep_Run` drives each wheel forward-only from
+   `MOTOR_SWEEP_MIN_DUTY` (800) to `MOTOR_SWEEP_MAX_DUTY` (3199) in
+   `MOTOR_SWEEP_STEP` (200) increments, holding each duty for
+   `MOTOR_SWEEP_HOLD_MS` (1500 ms) before sampling `Encoder_GetSpeed`, and
+   streams over USART2: `SWEEP_WHEEL=<name>` then
+   `SWEEP=<name>,<duty>,<rpm×1000>` per step.
+3. Per wheel, fit `RPM ≈ (duty − offset) / gain` (linear regression on the
+   captured `SWEEP=` points, dropping any point whose RPM exceeds ~5x the
+   median as a sensor glitch) and replace `speed_ff_gain[]`/`speed_ff_offset[]`
+   in `main.c` with the fitted per-wheel results.
+4. Revert `MOTOR_SWEEP_ON_BOOT` to `0U`, reflash, and re-run the Phase 4 bench
+   tuning procedure above to confirm the < 5% speed-tracking target with the
+   tuned feedforward + trim.
+
+Run with `scripts/sweep_capture.py` (pyserial, `camera_cv2` conda env) which
+auto-captures `SWEEP=` lines to CSV and fits gain/offset per wheel.
+
+**Hardware run 2026-07-02:** two concordant sweep runs after the HALL_RL/PB6
+fix ([[DECISIONS]] §D16) produced final coefficients now applied in `main.c`
+(order LF/RF/LR/RR): gain=20.21/16.41/14.58/15.00,
+offset=988.10/1308.95/1393.90/1353.18. `MOTOR_SWEEP_ON_BOOT` reverted to `0U`
+and reflashed. Step 4 (< 5% speed-tracking re-verification with the tuned
+feedforward) is still pending — see [[DECISIONS]] §D15; its encoder-scale
+pre-check sub-step is obsolete per [[DECISIONS]] §D17, and it is now further
+blocked by the encoder EMI issue in [[DECISIONS]] §D18.
 
 ## Data Collection
 
@@ -38,16 +147,34 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
   [[DECISIONS]] §D3) → captured to CSV on the host for offline comparison.
 - Once HC-06 occupies USART2, on-target streaming is unavailable; rely on
   pre-collected CSVs and the LCD readout.
+- **HC-06/Bluetooth capture from Windows (added 2026-07-02):** with HC-06
+  paired over Windows Bluetooth (not WSL), telemetry can be captured directly
+  from a Windows PowerShell `System.IO.Ports.SerialPort` session against the
+  bound COM port (e.g. `COM8`) — open the port, `WriteLine('AT+FWD')` (or other
+  AT command), then `ReadLine()` in a timed loop, timestamping each line with
+  `Diagnostics.Stopwatch` for later `ΔCNT/Δt` analysis. `scripts/speed_capture.py`
+  provides an equivalent pyserial-based capture + RPM_avg/error report for
+  offline/scripted use on either host.
 
 ## Fallbacks
 
 - **Debug path lost after HC-06 attach** — collect tuning data on USART2 *before*
   attaching HC-06; thereafter use LCD status. (No spare debug UART — [[DECISIONS]]
   §D3.)
-- **VL53L1X RAM footprint too large** — measure ST API static RAM before Phase 8
-  integration; if it threatens the budget, reduce ranging config or sensor count.
+- **Hardware I2C1 unusable; use software I2C** — enabling I2C1 drags `I2C1_SMBA`
+  onto PB5 and kills RF-reverse PWM ([[DECISIONS]] §D10). All hardware I2C
+  placements collide (I2C1 PB6/7→SMBA on PB5; I2C1 remap PB8/9 = RR motor; I2C2
+  PB10/11 = LR-reverse). The sensor bus is therefore a **software bit-bang I2C on
+  PA6/PB11** (`soft_i2c`); never re-enable the hardware I2C1 peripheral on this stack.
+- **VL53L1X RAM footprint too large** — current Debug build links at 6152 B RAM
+  and 60004 B FLASH with the STSW-IMG007 API. If later ranging options or modules
+  threaten the budget, reduce ranging config or sensor count.
 - **Turn drift from gyro integration** — fall back to the timer method baseline
   (±8°) if gyro integration underperforms, and record the gap.
+- **Encoder signal corrupted under load** — rely only on motors-idle captures to
+  validate encoder wiring; do not trust `SPD=`/`CNT=` speed-tracking numbers
+  gathered while driving until the EMI fix in [[DECISIONS]] §D18 lands and is
+  re-verified with a clean idle-vs-loaded comparison.
 
 ## Review Gate
 
