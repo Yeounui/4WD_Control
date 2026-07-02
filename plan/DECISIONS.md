@@ -194,7 +194,7 @@ the D16 remap.
 
 **Corrected 2026-06-29 from the actual code.** [[ARCHITECTURE]] §encoder
 previously documented a non-existent `Encoder_Update` returning `m/s` and a
-"pulse period" formula. The real `encoder.{h,c}` API is:
+"pulse period" formula. The real `encoder.{h,c}` API at that time was:
 
 - `Encoder_OnPulse(wheel)` (LL EXTI Hall ISR) increments `volatile pulse_count`.
 - `Encoder_Sample(dt)` (called each `SPEED_PERIOD_MS` in the speed loop) computes
@@ -202,12 +202,16 @@ previously documented a non-existent `Encoder_Update` returning `m/s` and a
 - `Encoder_GetSpeed(wheel)` returns **RPM** (not m/s); the speed PID and FSM
   setpoints (`FSM_DRIVE_RPM`) are consistently in RPM.
 
-`ENCODER_COUNTS_PER_REV` is a placeholder `20.0f` (Hall magnets × 2, both edges);
-it must be validated on hardware before the Phase 4 `< 5%` number is trusted.
+`ENCODER_COUNTS_PER_REV` was a placeholder `20.0f` (Hall magnets × 2, both edges)
+requiring hardware validation before the Phase 4 `< 5%` number could be trusted.
 
 To enable that Phase 4 measurement, a new `Encoder_GetCount(wheel)` accessor and a
 per-wheel USART2 telemetry line were added (`SPD=`/`CNT=`, see [[REVIEW]] §Phase 4
 bench tuning). No control logic, gains, or encoder math changed.
+
+**Superseded by [[D17]] (2026-07-02):** the pulse-count-per-window design and its
+`ENCODER_COUNTS_PER_REV` constant described above no longer exist in the code —
+`encoder.{h,c}` was reimplemented as period-based, single-magnet-per-wheel.
 
 ## D12 — Phase 5 uses yaw-PID setpoint steering plus gyro-integrated turn completion
 
@@ -284,6 +288,11 @@ Build verification passed with `cmake --build build/Debug --clean-first`; linked
 RAM use is 6152 B / 20 KB (30.04%) and FLASH use is 60004 B / 128 KB (45.78%).
 Hardware ranging and obstacle-threshold tuning are still pending.
 
+**Confirmed failing on hardware (2026-07-02, see [[D19]]):** two real driving
+runs, one of which ended in an actual collision, both show `OBS=0` for the
+entire capture window — the AVOID transition never triggers. Ranging/threshold
+tuning is not just pending, it is an active defect.
+
 ## D15 — Phase 4 speed loop adds a duty↔RPM feedforward plus narrow trim-PID, and a duty-sweep calibration mode
 
 **Implemented 2026-07-02.** The pure-P speed loop (`SPEED_KP=5`,
@@ -315,7 +324,10 @@ offset=1353.18 (order matches `MOTOR_LF..MOTOR_RR`). LF's higher gain vs. the
 other three wheels was consistent across both runs and is treated as a genuine
 per-wheel mechanical difference, not noise. `MOTOR_SWEEP_ON_BOOT` reverted to
 `0U` and reflashed. Phase 4 <5% speed-tracking re-verification with the tuned
-feedforward is still pending.
+feedforward is still pending — note [[D17]] removes the encoder-scale validation
+sub-step of that re-verification procedure as obsolete, and **[[D18]] found the
+re-verification itself is currently blocked by encoder signal corruption under
+load**, not by feedforward/trim gain error.
 
 ## D16 — Remove SHOCK sensor (never installed); move HALL_RL to its actual wiring on PB6; move soft-I2C SCL off PB6
 
@@ -355,3 +367,119 @@ SCL=PA6, SDA=PB11 (see [[D10]], canonical pin map in [[USER]]).
 §Canonical Pin Map / Hardware Connection Gates updated to match.
 
 **Status**: verified
+
+## D17 — Encoder reimplemented as period-based RPM, single magnet/wheel; obsoletes the counts/rev hand-rotation validation step
+
+**Decided/confirmed 2026-07-02 (commit `c3236b3`).** `encoder.{h,c}` no longer
+uses the pulse-count-per-window design from [[D11]]. `Encoder_OnPulse` now
+records each pulse's tick timestamp and derives the inter-pulse period (floored
+by `ENCODER_DEBOUNCE_FLOOR_MS` to reject noise); `Encoder_Sample` converts that
+period directly to RPM (`speed_rpm = 60000 / period_ms`), reporting 0 once the
+last pulse is older than `ENCODER_STALL_TIMEOUT_MS`. Confirmed verbatim from
+`Src/encoder.c` and `tests/test_encoder.c` (`test_one_revolution_period_reports_rpm`
+et al.) via `codegraph_explore`, 2026-07-02.
+
+Each wheel carries exactly one Hall magnet, so one pulse *is* one revolution by
+hardware design — there is no `ENCODER_COUNTS_PER_REV` scale constant left in the
+code to tune or validate. **This obsoletes [[REVIEW]] §Phase 4 Bench Tuning's
+step 1** ("hand-rotate one wheel N turns, compare ΔCNT/N against the `20.0f`
+placeholder") — user confirmed this validation was effectively already satisfied
+by the reimplementation itself, not a separate pending hardware step. The `CNT=`
+telemetry field (`Encoder_GetCount`) is now directly a revolution count, so the
+remaining Phase 4 re-verification math simplifies to
+`RPM_avg = (ΔCNT / Δt) × 60` (no division by a counts/rev constant).
+
+**Status**: verified
+
+## D18 — Speed-tracking re-verification blocked: Hall encoder lines pick up motor-current EMI under real driving load
+
+**Diagnosed 2026-07-02 via HC-06/COM8 capture (Windows PowerShell `System.IO.Ports.SerialPort`, `AT+FWD` at 80 RPM setpoint).** Two ground-driving captures (robot on the floor, actually moving) both show corrupted `SPD=`/`CNT=` telemetry:
+
+- `mLF`/`mRF`/`mLR` instantaneous RPM spike to `10000`–`11764` during drive —
+  period-based math (`60000/period_ms`) implies ~5 ms between pulses, far
+  shorter than a real ~600 ms period at ~100 RPM. These are debounce-surviving
+  noise doublets, not real pulses.
+- One capture's `CNT` for RF started at **5741** at t=0 while the robot was
+  still stationary (`SPD` all-zero) — other three wheels read 0–1 at the same
+  instant. A stationary single-magnet wheel cannot accumulate 5741 counts.
+- **Discriminating test:** immediately after, `AT+STOP` + a motors-idle 10 s
+  capture (no drive command) showed **zero `CNT` drift on all four wheels**
+  (`0,1,0,0` the entire window). This rules out a floating input / missing
+  pull-up (which would drift even with motors off) and isolates the cause to
+  **motor-current-induced EMI on the Hall signal lines, present only while the
+  motors are actually driving**.
+
+**Consequence:** the two ground-driving `< 5%` speed-tracking measurements
+attempted this session (`RPM_avg` computed from `CNT` deltas) are **not valid**
+— they measured corrupted encoder signal, not real wheel speed. One of the two
+runs also physically collided with an object mid-run, independently
+invalidating that run's numbers (unrelated to the EMI finding, but compounding
+it — see [[D19]]). Do **not** add an integral term (`Ki`) to `pid_speed`
+(the user's initial next step) until this is fixed — integrating on a
+provably-noisy feedback signal would wind up on the noise rather than correct
+a real steady-state error, and would make behavior worse, not better.
+
+Next diagnostic/fix (not yet done): target `ENCODER_DEBOUNCE_FLOOR_MS`
+(`encoder.{h,c}`) and/or hardware-side filtering (RC filter or added
+decoupling capacitance on the Hall signal/supply lines) so genuine ~5 ms noise
+doublets are rejected without discarding legitimate high-RPM pulses. Re-run the
+idle-vs-loaded capture comparison above after any fix to confirm the EMI is
+gone before re-attempting the Phase 4 `< 5%` speed-tracking measurement. Root
+cause is isolated (motor-current EMI); the fix itself has not been implemented
+or verified.
+
+**Revised by [[D20]] (2026-07-02):** a follow-up hand-spin-with-motor-off test
+reproduced the same implausible RPM spikes with **zero motor current**,
+showing motor-current EMI is not the sole (and maybe not even the primary)
+cause — see D20 for the corrected root-cause attribution.
+
+## D19 — TOF obstacle avoidance did not trigger on a real collision (twice)
+
+**Observed 2026-07-02** during the same ground-driving captures as [[D18]]: in
+one run the robot physically collided with an object while driving straight;
+in a second run (clear path, per user) the robot still visibly veered off
+course. In **both** captures, the `OBS=` telemetry field stayed `0` for the
+entire window — `FSM_SetObstacle`/the STRAIGHT→AVOID transition ([[D14]],
+`Src/fsm.c`) never fired, even through an actual impact. The AVOID state
+machine itself (S-curve decel → turn → clear → resume) is wired correctly per
+code inspection ([[ARCHITECTURE]] §fsm, §vl53l1x) — the failure is upstream, in
+`TOF_IsObstacle`/threshold detection or the physical sensor geometry (object
+may be outside the front TOF sensor's height/field of view).
+
+This was previously tracked only as "ranging/threshold tuning pending" under
+[[D14]]/Phase 8; it is now a **confirmed reproduced defect**, not just an
+unverified placeholder, and should be prioritized before relying on AVOID for
+collision safety during further driving tests. Root cause (threshold value vs.
+sensor geometry/mounting vs. something else) is not yet isolated.
+
+## D20 — Encoder noise reproduced with zero motor current: magnetic/mechanical switching bounce, not (only) motor-current EMI
+
+**Diagnosed 2026-07-02**, immediately after [[D18]]. To discriminate motor-current
+EMI from magnetic switching bounce (the single Hall magnet's field crossing the
+sensor's digital threshold slowly/ambiguously enough to chatter), the RF wheel
+was hand-spun (physically rotated by hand, slowly, a few turns) with the FSM in
+`IDLE` (`AT+STOP`, `SPD` setpoints all `0`, **zero PWM duty, zero motor current**)
+while capturing telemetry over the same HC-06/COM8 link as D18.
+
+**Result:** with motor current completely absent, `mRF` still climbed through
+implausible instantaneous values during the manual spin — `24` → `288` → `291`
+→ **`4878`** RPM — while `CNT` incremented only slowly and modestly (consistent
+with genuine slow hand rotation), not fast enough to explain a real 4878 RPM
+reading. Since no motor current was flowing at all, this artifact **cannot** be
+motor-current EMI — it is consistent with the magnet's field crossing the Hall
+sensor's switching threshold with enough ambiguity (slow transition edge, or
+marginal air gap) to register extra/short-period pulses that survive
+`ENCODER_DEBOUNCE_FLOOR_MS`.
+
+**Revised conclusion:** [[D18]]'s attribution to "motor-current EMI" is not the
+full picture — magnetic/mechanical switching bounce at the Hall sensor is
+confirmed as at least one real, reproducible contributor, independent of motor
+current. Motor-current EMI may still contribute additionally during actual
+driving (not ruled out), but a fix aimed only at motor-current filtering
+(decoupling capacitors on the driving current path) would likely be
+insufficient on its own. Prioritize `ENCODER_DEBOUNCE_FLOOR_MS` tuning and/or
+hardware hysteresis (Schmitt-trigger Hall sensor, or adjusting magnet-to-sensor
+air gap/alignment) as the fix, and re-run both the idle-vs-loaded ([[D18]]) and
+hand-spin-motor-off (this decision) comparisons after any fix to confirm both
+noise sources are actually gone before re-attempting the Phase 4 `< 5%`
+speed-tracking measurement.

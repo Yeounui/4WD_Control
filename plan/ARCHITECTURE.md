@@ -125,17 +125,24 @@ MPU-6050 driver on the software I2C bus (raw gyro + accel).
 | `MPU6050_Read` | Read gyro Z rate + compute accel tilt angle | — | `omega_dps`, `accel_angle` (via out-params) | called by control tick; calls `soft_i2c`; feeds `Kalman_Update` |
 
 ### encoder — `encoder.{h,c}`
-DIY Hall-sensor wheel encoder. RPM from pulse count over a fixed sample window:
-`RPM = (Δpulses / ENCODER_COUNTS_PER_REV) / dt · 60`. `ENCODER_COUNTS_PER_REV`
-is Hall magnets × 2 (both EXTI edges counted); placeholder `20.0f`, tune to
-hardware.
+DIY Hall-sensor wheel encoder, **period-based, single magnet per wheel**
+(reimplemented in commit `c3236b3`, superseding the earlier pulse-count-per-window
+design — see [[DECISIONS]] §D17). `Encoder_OnPulse` records the tick timestamp of
+each pulse and, once two pulses have been seen, the elapsed inter-pulse period
+(debounced by `ENCODER_DEBOUNCE_FLOOR_MS`, a floor on plausible period length).
+`Encoder_Sample` converts the latest stored period directly to RPM
+(`speed_rpm = 60000 / period_ms`), reporting 0 if no pulse has arrived yet or the
+last one is older than `ENCODER_STALL_TIMEOUT_MS` (wheel stopped). Since each
+wheel has exactly one magnet, one pulse = one revolution — there is no
+`ENCODER_COUNTS_PER_REV` scale constant to tune, and `Encoder_GetCount`'s
+cumulative pulse count is directly a revolution count.
 
 | Fn | Responsibility | Input | Output | Connections |
 |---|---|---|---|---|
-| `Encoder_OnPulse` | Increment cumulative pulse count for one wheel | `wheel` | effect: `pulse_count[wheel]++` | called by LL EXTI Hall ISR |
-| `Encoder_Sample` | Per-window: compute RPM from pulse-count delta | `dt` | effect: `speed_rpm[wheel]` updated | called by speed loop each `SPEED_PERIOD_MS` |
+| `Encoder_OnPulse` | Record pulse timestamp, derive latest inter-pulse period (debounced), increment cumulative pulse count | `wheel` | effect: `period_ms[wheel]`, `pulse_count[wheel]` updated | called by LL EXTI Hall ISR |
+| `Encoder_Sample` | Convert latest period to RPM, applying the stall timeout | `dt` (unused) | effect: `speed_rpm[wheel]` updated | called by speed loop each `SPEED_PERIOD_MS` |
 | `Encoder_GetSpeed` | Return latest speed for one wheel | `wheel` | speed (**RPM**) | called by speed loop; feeds `PID_Update(pid_speed)` |
-| `Encoder_GetCount` | Return cumulative pulse count (encoder-scale validation / telemetry) | `wheel` | pulses (uint32) | read by USART2 `CNT=` telemetry |
+| `Encoder_GetCount` | Return cumulative pulse count (= revolution count, telemetry) | `wheel` | pulses (uint32) | read by USART2 `CNT=` telemetry |
 
 ### line_sensor — `line_sensor.{h,c}`
 ADC1-DMA tracking-module input on PA0. The module owns the circular DMA sample

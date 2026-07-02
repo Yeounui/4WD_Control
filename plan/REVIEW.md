@@ -26,12 +26,18 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
   `R`; yaw stream stable. Kalman drift metric measured.
 - **Phase 4** — RPM/speed read per wheel; speed-tracking error < 5%. _Code
   complete (commits c92e8ea/9464ac5/813ed5c/4eda73e; encoder reimplemented as
-  period-based RPM, single magnet/wheel, in c3236b3). A duty↔RPM feedforward
-  plus narrow-range trim-PID was added on top; HW duty-sweep calibration ran
-  2026-07-02 and the fitted coefficients are applied in `main.c` (see
-  [[REVIEW]] §Phase 4 Feedforward Calibration, [[DECISIONS]] §D15). The final
-  < 5% speed-tracking re-verification with the tuned feedforward is still
-  pending._
+  period-based RPM, single magnet/wheel, in c3236b3, which also obsoletes the
+  encoder-scale hand-rotation validation sub-step — [[DECISIONS]] §D17). A
+  duty↔RPM feedforward plus narrow-range trim-PID was added on top; HW
+  duty-sweep calibration ran 2026-07-02 and the fitted coefficients are applied
+  in `main.c` (see [[REVIEW]] §Phase 4 Feedforward Calibration, [[DECISIONS]]
+  §D15). **The `< 5%` re-verification is now actively blocked, not just
+  pending: two 2026-07-02 ground-driving attempts showed corrupted encoder
+  telemetry (implausible 10,000+ RPM spikes, a stuck-high `CNT` on one wheel)
+  traced to motor-current EMI on the Hall lines — confirmed by a clean,
+  zero-drift motors-idle capture that rules out a wiring/pull-up cause. See
+  [[DECISIONS]] §D18. Adding `Ki` to the trim PID is deferred until this signal
+  integrity issue is fixed and re-verified._
 - **Phase 5** — 1 m straight deviation < 3 cm; 90° turn error < ±2°. _Code
   complete (commit 8e4f2ef); yaw gains, turn angle, ramp limits, and correction
   sign remain unverified on hardware._
@@ -44,8 +50,11 @@ verification approach. [[PHASES]] verify-steps reference the metrics here.
   (commit 9b3d18d); line PID/sign/calibration remain unverified on hardware._
 - **Phase 8** — 3 sensors enumerate on 0x54/0x56/0x58 after XSHUT address
   assignment; distance error < ±1 mm at 20 cm; obstacle triggers S-curve decel →
-  TURN → STRAIGHT. _Code complete (commit 6f00a92); ranging and thresholds remain
-  unverified on hardware._
+  TURN → STRAIGHT. _Code complete (commit 6f00a92); ranging and thresholds
+  remain unverified on hardware, and are now a **confirmed failing** item, not
+  just unverified: two 2026-07-02 ground-driving runs (one ending in an actual
+  collision) both show `OBS=0` for the entire capture — AVOID never triggered.
+  See [[DECISIONS]] §D19._
 - **Phase 9** — all metrics above re-measured end-to-end; Kalman-vs-complementary
   drift comparison graph produced from USART2→CSV data.
 
@@ -62,27 +71,37 @@ SPD=sLF,mLF,sRF,mRF,sLR,mLR,sRR,mRR;CNT=cLF,cRF,cLR,cRR
 - `s*`/`m*` = commanded vs measured speed in **deci-RPM** (÷10 → RPM); order LF, RF, LR, RR.
 - `c*` = cumulative Hall pulse count (`Encoder_GetCount`), same order.
 
-`m` is derived from one ~10 ms (`SPEED_PERIOD_MS`) pulse-delta window, so its
-quantum is `6000 / ENCODER_COUNTS_PER_REV` RPM (≈300 RPM at the `20.0f`
-placeholder). Treat `m` as a **liveness/direction** readout only — it cannot
-resolve a 5% error. Use `CNT` deltas for the actual metric.
+**Encoder is period-based, single magnet/wheel ([[DECISIONS]] §D17):** `m` is
+derived from the actual inter-pulse period, not a coarse fixed-window
+pulse-delta, so it is a legitimate instantaneous RPM reading rather than a
+liveness-only quantized value — **when the signal is clean**. Under real
+driving load, `m` and `CNT` can currently show noise-corrupted values (see
+[[DECISIONS]] §D18); treat implausible `m` spikes (order of magnitude above
+the commanded setpoint) as a signal-integrity red flag, not as data to fit
+gains against.
 
 **Procedure:**
-1. **Validate encoder scale first.** In IDLE (motors off), hand-rotate one wheel
-   exactly N turns; `counts/rev = ΔCNT / N`. If it differs from
-   `ENCODER_COUNTS_PER_REV` (`20.0f`), correct the constant and reflash — RPM is
-   meaningless until this is right ([[DECISIONS]] §D11).
+1. **Confirm signal integrity first** (added 2026-07-02, see [[DECISIONS]]
+   §D18). Capture ~10 s with motors idle (`AT+STOP`, no drive command); `CNT`
+   must not drift at all. Then capture ~10 s while driving; if `m`/`CNT` still
+   show implausible spikes only in the driving capture, the Hall lines are
+   picking up motor-current EMI and must be hardened (debounce/filtering)
+   before trusting any RPM_avg/error computed below.
 2. **Measure + tune.** Command FORWARD (80 RPM setpoint). Compute steady-state
    average RPM per wheel from `CNT` over a multi-second window Δt:
-   `RPM_avg = (ΔCNT / ENCODER_COUNTS_PER_REV) / Δt × 60` (a few seconds so ±1
-   count is well under 5%); error = `|RPM_avg − 80| / 80`. Adjust `SPEED_KP/KI/KD`
-   (`main.c`, currently 5/0/0), rebuild + reflash, repeat until all four wheels
-   are < 5%.
+   `RPM_avg = (ΔCNT / Δt) × 60` (a few seconds so ±1 count is well under 5%);
+   error = `|RPM_avg − 80| / 80`. Adjust `SPEED_KP/KI/KD` (`main.c`, currently
+   5/0/0), rebuild + reflash, repeat until all four wheels are < 5%.
+
+(The former step 1, hand-rotating a wheel to validate `ENCODER_COUNTS_PER_REV`,
+is obsolete — that constant no longer exists in the code; see [[DECISIONS]]
+§D17.)
 
 Gains are compile-time (no runtime gain command); each iteration is a reflash.
 The P-only loop (`Kp=5, Ki=0`) runs on the same coarse per-tick RPM and is
 expected to jitter/steady-state-droop — tune around it (add `Ki`) rather than
-treating the jitter as a defect.
+treating the jitter as a defect, **but only once step 1's signal-integrity
+check passes** ([[DECISIONS]] §D18).
 
 ## Phase 4 Feedforward Calibration — duty↔RPM sweep
 
@@ -118,7 +137,9 @@ fix ([[DECISIONS]] §D16) produced final coefficients now applied in `main.c`
 (order LF/RF/LR/RR): gain=20.21/16.41/14.58/15.00,
 offset=988.10/1308.95/1393.90/1353.18. `MOTOR_SWEEP_ON_BOOT` reverted to `0U`
 and reflashed. Step 4 (< 5% speed-tracking re-verification with the tuned
-feedforward) is still pending — see [[DECISIONS]] §D15.
+feedforward) is still pending — see [[DECISIONS]] §D15; its encoder-scale
+pre-check sub-step is obsolete per [[DECISIONS]] §D17, and it is now further
+blocked by the encoder EMI issue in [[DECISIONS]] §D18.
 
 ## Data Collection
 
@@ -126,6 +147,14 @@ feedforward) is still pending — see [[DECISIONS]] §D15.
   [[DECISIONS]] §D3) → captured to CSV on the host for offline comparison.
 - Once HC-06 occupies USART2, on-target streaming is unavailable; rely on
   pre-collected CSVs and the LCD readout.
+- **HC-06/Bluetooth capture from Windows (added 2026-07-02):** with HC-06
+  paired over Windows Bluetooth (not WSL), telemetry can be captured directly
+  from a Windows PowerShell `System.IO.Ports.SerialPort` session against the
+  bound COM port (e.g. `COM8`) — open the port, `WriteLine('AT+FWD')` (or other
+  AT command), then `ReadLine()` in a timed loop, timestamping each line with
+  `Diagnostics.Stopwatch` for later `ΔCNT/Δt` analysis. `scripts/speed_capture.py`
+  provides an equivalent pyserial-based capture + RPM_avg/error report for
+  offline/scripted use on either host.
 
 ## Fallbacks
 
@@ -142,6 +171,10 @@ feedforward) is still pending — see [[DECISIONS]] §D15.
   threaten the budget, reduce ranging config or sensor count.
 - **Turn drift from gyro integration** — fall back to the timer method baseline
   (±8°) if gyro integration underperforms, and record the gap.
+- **Encoder signal corrupted under load** — rely only on motors-idle captures to
+  validate encoder wiring; do not trust `SPD=`/`CNT=` speed-tracking numbers
+  gathered while driving until the EMI fix in [[DECISIONS]] §D18 lands and is
+  re-verified with a clean idle-vs-loaded comparison.
 
 ## Review Gate
 

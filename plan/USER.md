@@ -71,9 +71,10 @@ procedure is in [[PHASES]]; this section is the wiring checklist the user acts o
   GND, AD0→GND (address 0x68). Use external pull-ups on SDA/SCL if the modules do
   not already provide a suitable bus pull-up set.
 - **Phase 4 — 4× Hall sensor + magnets**: signal lines FL→PB0, FR→PB1, RL→PB6,
-  RR→PA4. Mount one
-  (or more) magnet(s) per wheel; record magnets-per-revolution for the encoder
-  constant.
+  RR→PA4. Mount exactly one magnet per wheel — the encoder is period-based and
+  assumes a single magnet/wheel (one pulse = one revolution, [[DECISIONS]]
+  §D17); do not mount more than one, and no per-wheel magnets-per-revolution
+  value needs to be recorded.
 - **Phase 6 — I2C LCD + buzzer**: LCD (PCF8574 backpack) shares the software I2C
   bus on SCL→PA6 and SDA→PB11. VCC 5 V, GND. Buzzer→PC0, GND. (The shock sensor
   originally planned for this phase was never installed — [[DECISIONS]] §D16.)
@@ -115,7 +116,9 @@ stty -F /dev/ttyACM0 115200 raw -echo
 
 - Kalman `R` — variance of 500 stationary gyro samples ([[PHASES]] §Phase 3).
 - Kalman `Q`, PID gains (`pid_yaw`, `pid_speed`, `pid_line`) — tuned on hardware.
-- Magnets-per-revolution for the Hall encoder constant ([[PHASES]] §Phase 4).
+- Hall encoder magnets-per-revolution: fixed at **1** by hardware/firmware design
+  (single magnet/wheel, period-based RPM — [[DECISIONS]] §D17); not an
+  empirically-tuned value.
 - VL53L1X obstacle thresholds (mm) per direction.
 - Duty↔RPM feedforward coefficients (`speed_ff_gain[]`/`speed_ff_offset[]`,
   order LF/RF/LR/RR): 20.21/988.10, 16.41/1308.95, 14.58/1393.90, 15.00/1353.18
